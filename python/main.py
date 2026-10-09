@@ -65,9 +65,11 @@ def _label(compound: float) -> str:
     return "Neutral"
 
 
+@app.get("/")
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
 
 
 @app.post("/analyze")
