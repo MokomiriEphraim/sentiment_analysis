@@ -655,14 +655,24 @@ app.post('/api/ai-scores', async (req, res) => {
 // badge auto-recovers after `npm run sidecar` is restarted. Any HTTP response
 // (even a 404) means the process is alive; only a connection error means down.
 app.get('/api/py-health', async (_req, res) => {
-  const baseUrl = process.env.PYTHON_URL || 'http://127.0.0.1:8000';
+  const rawBase = process.env.PYTHON_URL || 'http://127.0.0.1:8000';
+  const baseUrl = rawBase.startsWith('http://') || rawBase.startsWith('https://')
+    ? rawBase
+    : `https://${rawBase}`;
+
   try {
-    await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(1500) });
-    return res.json({ available: true });
-  } catch {
-    return res.json({ available: false });
+    const targetUrl = new URL('/', baseUrl).toString();
+    const probeRes = await fetch(targetUrl, { signal: AbortSignal.timeout(3000) });
+    return res.json({ available: true, status: probeRes.status, url: targetUrl });
+  } catch (error: any) {
+    return res.json({
+      available: false,
+      baseUrl: rawBase,
+      error: error?.message || String(error),
+    });
   }
 });
+
 
 // Python VADER sidecar proxy (optional; start with `npm run sidecar`)
 app.post('/api/py-analyze', async (req, res) => {
