@@ -1,0 +1,12 @@
+.git
+node_modules
+.venv
+dist
+coverage
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+python/__pycache__
+python/*.pyc

@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: cloud-sentiment
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: oregon  # free tier region
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      - key: PYTHON_URL
+        value: "http://127.0.0.1:8000"
+
+      # ── Add your own values for these in the Render dashboard ──
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: "gpt-4o-mini"
+      - key: RESEND_API
+        sync: false
+      - key: RESEND_FROM
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: APIFY_API_KEY
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB
+        value: "cloud_sentiment"
+    healthCheckPath: /api/py-health
