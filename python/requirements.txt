@@ -1,0 +1,5 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+vaderSentiment>=3.3.2
+emoji>=2.10
+pydantic>=2.0

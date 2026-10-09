@@ -1,0 +1,8 @@
+{
+  "name": "Cloud Sentiment",
+  "description": "Analyze the tone of reviews, emails, and feedback in your browser — scores by sentence, word, and emoji.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
