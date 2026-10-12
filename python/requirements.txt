@@ -3,3 +3,5 @@ uvicorn[standard]>=0.30
 vaderSentiment>=3.3.2
 emoji>=2.10
 pydantic>=2.0
+networkx>=3.0
+numpy>=1.26
