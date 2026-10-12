@@ -25,8 +25,7 @@ import {
   ChevronUp,
   Radar,
   FlaskConical,
-  AlertTriangle,
-  Sparkles
+  AlertTriangle
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -556,15 +555,7 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
             <div className="flex items-start gap-2.5">
               <Info className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
               <div className="w-full">
-                <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
-                  <h4 className="font-bold text-zinc-900">What This Means in Plain English</h4>
-                  {analysisData.is_ai_generated && (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-semibold">
-                      <Sparkles className="w-3 h-3 text-emerald-600" />
-                      Synthesized by OpenAI ({analysisData.ai_model || 'gpt-4o-mini'})
-                    </span>
-                  )}
-                </div>
+                <h4 className="font-bold text-zinc-900 mb-1">What This Means in Plain English</h4>
                 <p className="text-zinc-600 mt-1 leading-relaxed text-xs">
                   {analysisData.causal_pathway_narrative}
                 </p>
