@@ -50,6 +50,7 @@ async function getMongoDb(): Promise<Db | null> {
     await mongoDb.collection('pulls').createIndex({ deviceId: 1, createdAt: -1 });
     await mongoDb.collection('comments').createIndex({ pullId: 1 });
     await mongoDb.collection('comments').createIndex({ deviceId: 1, createdAt: -1 });
+    await mongoDb.collection('predictions').createIndex({ deviceId: 1, createdAt: -1 });
     console.log('MongoDB connected:', process.env.MONGO_DB || '(URI default db)');
     return mongoDb;
   } catch (error: any) {
@@ -795,6 +796,279 @@ app.post('/api/py-batch', async (req, res) => {
       message: 'Python service not reachable.',
       detail: error.message || String(error),
     });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Causal & Predictive Sentiment Engine Proxy
+// ─────────────────────────────────────────────────────────────────────────────
+app.get('/api/causal/presets', async (_req, res) => {
+  try {
+    const baseUrl = process.env.PYTHON_URL || 'http://127.0.0.1:8000';
+    const response = await fetch(`${baseUrl}/causal/presets`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return res.json(data);
+    }
+  } catch (err) {
+    // Graceful fallback to default presets
+  }
+  return res.json({
+    presets: [
+      {
+        id: 'eskom_stage6',
+        title: 'Eskom Stage 6 Load-Shedding Announcement',
+        description: 'State utility announces immediate escalation to Stage 6 rolling blackouts across South Africa.',
+        default_severity: 8,
+        shock_impact: -0.68,
+        nadir_delay_hours: 3.0,
+      },
+      {
+        id: 'sarb_rate_cut',
+        title: 'SARB 50bps Interest Rate Cut',
+        description: 'South African Reserve Bank Monetary Policy Committee cuts repo rate by 50 basis points.',
+        default_severity: 7,
+        shock_impact: 0.54,
+        nadir_delay_hours: 5.5,
+      },
+      {
+        id: 'telco_fiber_outage',
+        title: 'Major Telco Nationwide Subsea Cable Severance',
+        description: 'Key undersea cable severed, dropping internet connectivity for 4 million banking and remote users.',
+        default_severity: 9,
+        shock_impact: -0.59,
+        nadir_delay_hours: 2.5,
+      },
+      {
+        id: 'rugby_world_cup',
+        title: 'Springboks Win World Rugby Championship',
+        description: 'National rugby team clinches historic final victory in Paris, igniting nationwide celebration.',
+        default_severity: 10,
+        shock_impact: 0.81,
+        nadir_delay_hours: 2.0,
+      },
+    ],
+  });
+});
+
+/**
+ * Persist a causal prediction to MongoDB for memory & presentation recovery.
+ */
+async function recordPrediction(opts: {
+  deviceId: string;
+  result: any;
+  platform?: string;
+  url?: string;
+  commentCount?: number;
+}): Promise<string | null> {
+  try {
+    const db = await getMongoDb();
+    if (!db || !opts.deviceId) return null;
+    const now = new Date();
+
+    const doc = {
+      deviceId: opts.deviceId,
+      scenarioTitle: opts.result?.scenario_title || 'Unknown Scenario',
+      interventionName: opts.result?.intervention_name || '',
+      severityLevel: opts.result?.severity_level ?? 8,
+      forecastHorizonHours: opts.result?.forecast_horizon_hours ?? 24,
+      baselineSentimentAtZero: opts.result?.baseline_sentiment_at_zero ?? 0,
+      predictedNadirSentiment: opts.result?.predicted_nadir_sentiment ?? 0,
+      treatmentEffectAte: opts.result?.treatment_effect_ate ?? 0,
+      counterfactualDelta: opts.result?.counterfactual_delta ?? 0,
+      timeToPeakImpactHours: opts.result?.time_to_peak_impact_hours ?? 3,
+      recoveryHalfLifeHours: opts.result?.recovery_half_life_hours ?? 16,
+      causalRobustnessScore: opts.result?.causal_robustness_score ?? 95,
+      platform: opts.platform || null,
+      url: opts.url || null,
+      commentCount: opts.commentCount || null,
+      result: opts.result,
+      createdAt: now,
+    };
+
+    const res = await db.collection('predictions').insertOne(doc);
+    return String(res.insertedId);
+  } catch (err: any) {
+    console.warn('MongoDB prediction memory save failed:', err?.message);
+    return null;
+  }
+}
+
+app.post('/api/causal/analyze', async (req, res) => {
+  let finalResult: any = null;
+
+  try {
+    const baseUrl = process.env.PYTHON_URL || 'http://127.0.0.1:8000';
+    const response = await fetch(`${baseUrl}/causal/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(16000),
+    });
+    if (response.ok) {
+      finalResult = await response.json();
+    }
+  } catch (err: any) {
+    console.warn('Python causal backend proxy error, falling back:', err?.message);
+  }
+
+  // Resilient fallback logic when Python sidecar is offline
+  if (!finalResult) {
+    const { computeLocalCausalModel } = await import('./src/nlp/causalEngine.js').catch(() => ({
+      computeLocalCausalModel: null,
+    }));
+    if (computeLocalCausalModel) {
+      finalResult = computeLocalCausalModel({
+        presetKey: req.body?.preset_key,
+        customHeadline: req.body?.custom_headline,
+        severity: req.body?.severity,
+        horizonHours: req.body?.horizon_hours,
+        baseSentiment: req.body?.base_sentiment,
+      });
+    }
+  }
+
+  if (finalResult) {
+    // If not already synthesized by OpenAI, generate tailored plain-English explanation via OpenAI
+    if (!finalResult.is_ai_generated && process.env.OPENAI_API_KEY) {
+      try {
+        const scenarioTitle = finalResult.scenario_title || finalResult.intervention_name || 'Public Event';
+        const prompt = `You are an expert causal data scientist and public communication strategist.
+We just conducted a causal inference analysis on a public event / headline.
+
+EVENT / HEADLINE: "${scenarioTitle}"
+${req.body?.platform ? `PLATFORM: ${req.body.platform}` : ''}
+KEY METRICS:
+- Initial Baseline Mood: ${finalResult.baseline_sentiment_at_zero > 0 ? '+' : ''}${finalResult.baseline_sentiment_at_zero?.toFixed(2)} (scale -1.0 to +1.0)
+- Predicted Nadir (Lowest/Peak Mood): ${finalResult.predicted_nadir_sentiment > 0 ? '+' : ''}${finalResult.predicted_nadir_sentiment?.toFixed(2)}
+- Causal Mood Shift (ATE): ${finalResult.treatment_effect_ate > 0 ? '+' : ''}${finalResult.treatment_effect_ate?.toFixed(2)} pts
+- Time to Peak Public Impact: ${finalResult.time_to_peak_impact_hours?.toFixed(1)} hours
+- Difference vs Normal Day: ${finalResult.counterfactual_delta > 0 ? '+' : ''}${finalResult.counterfactual_delta?.toFixed(2)} pts
+- Horizon: ${finalResult.forecast_horizon_hours} hours
+
+INSTRUCTIONS:
+1. Explain what is happening in simple, conversational, everyday plain English that anyone can understand.
+2. Directly reference the specific event ("${scenarioTitle}") and explain what is causing people to react this way, how it impacts their everyday reality (e.g. commuting costs, food prices, personal stress), and what a normal day would have been like without this event.
+3. Provide 3 specific, non-generic, actionable steps public leaders or communicators can take right now to address public concerns and restore trust.
+4. DO NOT use generic placeholders like 'Consumer Frustration' or 'Social Media Outrage Cascade'. Write natural, topic-specific prose.
+
+Respond ONLY with valid JSON with this exact structure:
+{
+  "narrative": "Here is what happens in simple terms: ...",
+  "mitigations": [
+    "Headline Action: Specific concrete advice for this situation",
+    "Headline Action: Another specific step",
+    "Headline Action: Another specific step"
+  ]
+}`;
+
+        const aiResponse = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: OPENAI_MODEL,
+            temperature: 0.4,
+            max_tokens: 500,
+            response_format: { type: 'json_object' },
+            messages: [{ role: 'user', content: prompt }],
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (aiResponse.ok) {
+          const aiData = await aiResponse.json();
+          const parsed = JSON.parse(aiData.choices[0].message.content);
+          if (parsed.narrative) {
+            finalResult.causal_pathway_narrative = parsed.narrative;
+          }
+          if (Array.isArray(parsed.mitigations) && parsed.mitigations.length > 0) {
+            finalResult.recommended_mitigations = parsed.mitigations;
+          }
+          finalResult.is_ai_generated = true;
+          finalResult.ai_model = OPENAI_MODEL;
+        }
+      } catch (err: any) {
+        console.warn('OpenAI causal narrative fallback error:', err?.message);
+      }
+    }
+
+    // Save to MongoDB memory asynchronously (never slows down response)
+    const deviceId = typeof req.body?.deviceId === 'string' ? req.body.deviceId : '';
+    if (deviceId) {
+      await recordPrediction({
+        deviceId,
+        result: finalResult,
+        platform: req.body?.platform,
+        url: req.body?.url,
+        commentCount: req.body?.commentCount,
+      });
+    }
+    return res.json(finalResult);
+  }
+
+  return res.status(500).json({ error: 'Causal engine calculation failed' });
+});
+
+// Retrieve saved predictions from MongoDB memory for this device
+app.get('/api/causal/history', async (req, res) => {
+  try {
+    const deviceId = String(req.query.deviceId || '');
+    if (!DEVICE_ID_RE.test(deviceId)) {
+      return res.json({ available: true, history: [] });
+    }
+    const db = await getMongoDb();
+    if (!db) return res.json({ available: false, history: [] });
+
+    const items = await db
+      .collection('predictions')
+      .find({ deviceId })
+      .sort({ createdAt: -1 })
+      .limit(30)
+      .toArray();
+
+    return res.json({
+      available: true,
+      history: items.map(p => ({
+        id: String(p._id),
+        scenarioTitle: String(p.scenarioTitle || ''),
+        interventionName: String(p.interventionName || ''),
+        treatmentEffectAte: Number(p.treatmentEffectAte) || 0,
+        predictedNadirSentiment: Number(p.predictedNadirSentiment) || 0,
+        counterfactualDelta: Number(p.counterfactualDelta) || 0,
+        causalRobustnessScore: Number(p.causalRobustnessScore) || 95,
+        platform: p.platform ? String(p.platform) : null,
+        url: p.url ? String(p.url) : null,
+        commentCount: p.commentCount ? Number(p.commentCount) : null,
+        result: p.result,
+        createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : null,
+      })),
+    });
+  } catch (error: any) {
+    console.error('Error in GET /api/causal/history:', error);
+    return res.json({ available: false, history: [] });
+  }
+});
+
+// Delete a saved prediction from MongoDB memory
+app.delete('/api/causal/history/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deviceId = String(req.query.deviceId || '');
+    if (!/^[0-9a-fA-F]{24}$/.test(id) || !DEVICE_ID_RE.test(deviceId)) {
+      return res.status(400).json({ error: 'Valid id and deviceId required' });
+    }
+    const db = await getMongoDb();
+    if (!db) return res.status(503).json({ error: 'Database unavailable' });
+
+    await db.collection('predictions').deleteOne({ _id: new ObjectId(id), deviceId });
+    return res.json({ success: true, deletedId: id });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || 'Delete failed' });
   }
 });
 

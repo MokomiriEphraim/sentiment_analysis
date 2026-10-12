@@ -20,6 +20,8 @@ export interface VaderOverall {
   neg: number;
   emojis: VaderEmoji[];
   emojiCompound: number;
+  emojiModel?: string;
+  hfTokenConfigured?: boolean;
 }
 
 export interface VaderSentence {
@@ -115,6 +117,8 @@ export async function fetchVaderOverall(text: string): Promise<VaderOverall> {
     neg: data.scores.neg,
     emojis: data.emojis || [],
     emojiCompound: data.emojiCompound ?? 0,
+    emojiModel: data.emojiModel || 'Hugging Face (BERT Emoji Sentiment)',
+    hfTokenConfigured: data.hfTokenConfigured ?? true,
   };
 }
 

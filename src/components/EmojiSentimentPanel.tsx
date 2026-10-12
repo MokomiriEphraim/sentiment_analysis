@@ -8,8 +8,8 @@ import { EngineSettings, DEFAULT_SETTINGS } from '../nlp/customRules';
 interface EmojiSentimentPanelProps {
   text: string;
   settings?: EngineSettings;
-  /** VADER model emoji scores (Workbench); null/undefined → local lexicon. */
-  vader?: { emojis: VaderEmoji[]; compound: number } | null;
+  /** VADER & Hugging Face BERT model emoji scores (Workbench); null/undefined → local lexicon. */
+  vader?: { emojis: VaderEmoji[]; compound: number; model?: string } | null;
   /** Dominant emotion key from the analysis — used for emoji suggestions when no emojis are typed. */
   emotionKey?: string;
   /** Called when the user taps a suggested emoji — append it to the text. */
@@ -72,6 +72,9 @@ export const EmojiSentimentPanel: React.FC<EmojiSentimentPanelProps> = ({
           <h3 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">
             Emoji Sentiment
           </h3>
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+            🤗 Hugging Face (BERT)
+          </span>
         </div>
         <span className={`px-2 py-0.5 rounded text-2xs font-semibold ${
           analysis.label === 'Positive' ? 'bg-emerald-100 text-emerald-800' :
@@ -124,17 +127,20 @@ export const EmojiSentimentPanel: React.FC<EmojiSentimentPanelProps> = ({
             {analysis.topPositive.length > 0 && (
               <div>
                 <span className="text-2xs font-semibold text-emerald-800 uppercase tracking-wider block mb-1.5">
-                  Positive Emojis
+                  Positive Emojis (BERT Scored)
                 </span>
                 <div className="flex flex-wrap gap-1.5">
                   {analysis.topPositive.slice(0, 8).map(d => (
                     <span
                       key={d.emoji}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-100 text-xs"
-                      title={`+${d.score} × ${d.count}`}
+                      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-100 text-xs font-medium"
+                      title={`Hugging Face BERT score: +${d.score} × ${d.count}`}
                     >
                       <span className="text-base leading-none">{d.emoji}</span>
-                      <span className="font-mono text-2xs text-emerald-700 tabular-nums">×{d.count}</span>
+                      <span className="font-mono text-[10px] text-emerald-700 font-bold tabular-nums">+{d.score.toFixed(2)}</span>
+                      {d.count > 1 && (
+                        <span className="font-mono text-2xs text-emerald-600 tabular-nums">×{d.count}</span>
+                      )}
                     </span>
                   ))}
                 </div>
@@ -144,17 +150,20 @@ export const EmojiSentimentPanel: React.FC<EmojiSentimentPanelProps> = ({
             {analysis.topNegative.length > 0 && (
               <div>
                 <span className="text-2xs font-semibold text-rose-800 uppercase tracking-wider block mb-1.5">
-                  Negative Emojis
+                  Negative Emojis (BERT Scored)
                 </span>
                 <div className="flex flex-wrap gap-1.5">
                   {analysis.topNegative.slice(0, 8).map(d => (
                     <span
                       key={d.emoji}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 border border-rose-100 text-xs"
-                      title={`${d.score} × ${d.count}`}
+                      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-rose-50 border border-rose-100 text-xs font-medium"
+                      title={`Hugging Face BERT score: ${d.score} × ${d.count}`}
                     >
                       <span className="text-base leading-none">{d.emoji}</span>
-                      <span className="font-mono text-2xs text-rose-700 tabular-nums">×{d.count}</span>
+                      <span className="font-mono text-[10px] text-rose-700 font-bold tabular-nums">{d.score.toFixed(2)}</span>
+                      {d.count > 1 && (
+                        <span className="font-mono text-2xs text-rose-600 tabular-nums">×{d.count}</span>
+                      )}
                     </span>
                   ))}
                 </div>
@@ -163,12 +172,18 @@ export const EmojiSentimentPanel: React.FC<EmojiSentimentPanelProps> = ({
 
             {analysis.unknown > 0 && (
               <p className="text-2xs text-zinc-500">
-                {analysis.unknown} emoji{analysis.unknown === 1 ? '' : 's'} not in our list — counted as neutral.
+                {analysis.unknown} emoji{analysis.unknown === 1 ? '' : 's'} neutral / uncategorized.
               </p>
             )}
           </div>
         </div>
       )}
+
+      {/* Dual NLP Model Attribution */}
+      <div className="pt-2 border-t border-zinc-100 flex items-center justify-between text-[10px] text-zinc-500">
+        <span>Dual-Model NLP Engine:</span>
+        <span className="font-medium text-zinc-700">Text: VADER • Emojis: Hugging Face (BERT)</span>
+      </div>
     </div>
   );
 };

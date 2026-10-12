@@ -7,6 +7,7 @@ import React, { useEffect, useState } from 'react';
 import { Header, NavTab } from './components/Header';
 import { Workbench } from './components/Workbench';
 import { LiveStream } from './components/LiveStream';
+import { CausalPredictiveStudio } from './components/CausalPredictiveStudio';
 import { ReportModal } from './components/ReportModal';
 import { HelpAssistant } from './components/HelpAssistant';
 import { LiveReportData } from './lib/reportEmail';
@@ -26,7 +27,7 @@ export default function App() {
     startVaderHealthPolling();
   }, []);
 
-  const [activeTab, setActiveTab] = useState<NavTab>('workbench');
+  const [activeTab, setActiveTab] = useState<NavTab>('causal');
   const [customWords] = useState<CustomWordRule[]>(() => loadCustomWords());
   const [engineSettings] = useState<EngineSettings>(() => loadEngineSettings());
   const [isReportOpen, setIsReportOpen] = useState(false);
@@ -36,10 +37,27 @@ export default function App() {
   const [liveReport, setLiveReport] = useState<LiveReportData | null>(null);
   // The Workbench pushes its live result here so the report matches the screen
   const [workbenchResult, setWorkbenchResult] = useState<SentimentAnalysisResult | null>(null);
+  // Real scraped comments context passed to the Causal Forecaster
+  const [scrapedCausalContext, setScrapedCausalContext] = useState<{
+    headline: string;
+    averageSentiment: number;
+    commentCount: number;
+    platform: string;
+  } | null>(null);
 
   const handleSendToWorkbench = (text: string) => {
     setWorkbenchText(text);
     setActiveTab('workbench');
+  };
+
+  const handleSendToCausal = (payload: {
+    headline: string;
+    averageSentiment: number;
+    commentCount: number;
+    platform: string;
+  }) => {
+    setScrapedCausalContext(payload);
+    setActiveTab('causal');
   };
 
   const currentReportResult =
@@ -57,7 +75,14 @@ export default function App() {
 
       {/* Main Workspace Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {activeTab === 'workbench' && (
+        <div className={activeTab === 'causal' ? 'block' : 'hidden'}>
+          <CausalPredictiveStudio
+            initialScrapedContext={scrapedCausalContext}
+            onClearScrapedContext={() => setScrapedCausalContext(null)}
+          />
+        </div>
+
+        <div className={activeTab === 'workbench' ? 'block' : 'hidden'}>
           <Workbench
             customWords={customWords}
             engineSettings={engineSettings}
@@ -65,16 +90,17 @@ export default function App() {
             onTextChange={setWorkbenchText}
             onResultChange={setWorkbenchResult}
           />
-        )}
+        </div>
 
-        {activeTab === 'stream' && (
+        <div className={activeTab === 'stream' ? 'block' : 'hidden'}>
           <LiveStream
             customWords={customWords}
             engineSettings={engineSettings}
             onSendToWorkbench={handleSendToWorkbench}
+            onSendToCausal={handleSendToCausal}
             onReportData={setLiveReport}
           />
-        )}
+        </div>
       </main>
 
       {/* Printable Executive Report Modal */}

@@ -1,7 +1,7 @@
 import React from 'react';
-import { Sparkles, Activity, FileText } from 'lucide-react';
+import { Sparkles, Activity, FileText, GitBranch, Zap } from 'lucide-react';
 
-export type NavTab = 'workbench' | 'stream';
+export type NavTab = 'workbench' | 'stream' | 'causal';
 
 interface HeaderProps {
   activeTab: NavTab;
@@ -23,16 +23,21 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="w-8 h-8 rounded-lg bg-zinc-900 flex items-center justify-center text-white font-semibold text-sm shadow-sm">
             C
           </div>
-          <span className="text-lg font-semibold tracking-tight text-zinc-900">
-            Cloud Sentiment
-          </span>
+          <div className="flex flex-col">
+            <span className="text-lg font-semibold tracking-tight text-zinc-900 leading-none">
+              Cloud Sentiment
+            </span>
+            <span className="text-[10px] text-zinc-400 font-medium tracking-wide uppercase mt-0.5">
+              Causal & Predictive AI
+            </span>
+          </div>
         </div>
 
         {/* Zone 2: 4-6 clean text navigation links (functional segmented tabs) */}
         <nav className="flex items-center gap-1 bg-zinc-100 p-1 rounded-xl border border-zinc-200/80">
           <button
             onClick={() => setActiveTab('workbench')}
-            className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+            className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
               activeTab === 'workbench'
                 ? 'bg-white text-zinc-950 shadow-xs font-semibold'
                 : 'text-zinc-600 hover:text-zinc-950 hover:bg-zinc-50'
@@ -44,7 +49,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           <button
             onClick={() => setActiveTab('stream')}
-            className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+            className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
               activeTab === 'stream'
                 ? 'bg-white text-zinc-950 shadow-xs font-semibold'
                 : 'text-zinc-600 hover:text-zinc-950 hover:bg-zinc-50'
@@ -52,6 +57,21 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Activity className="w-3.5 h-3.5" />
             <span>Live Comments</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('causal')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap ${
+              activeTab === 'causal'
+                ? 'bg-rose-600 text-white shadow-xs font-bold'
+                : 'text-rose-700 bg-rose-50/60 hover:bg-rose-100/80 hover:text-rose-900'
+            }`}
+          >
+            <Zap className={`w-3.5 h-3.5 ${activeTab === 'causal' ? 'fill-white' : 'text-rose-600'}`} />
+            <span>Causal & Predictive Engine</span>
+            <span className="text-[9px] px-1.5 py-0.2 rounded-full font-extrabold uppercase bg-rose-700/80 text-white ml-0.5">
+              4-Agent
+            </span>
           </button>
         </nav>
 

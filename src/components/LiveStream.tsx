@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   RefreshCw, Search, ShieldAlert, ExternalLink, Link2,
-  Loader2, AlertCircle, Radar, History, ArrowLeft, Trash2, Download
+  Loader2, AlertCircle, Radar, History, ArrowLeft, Trash2, Download, Zap
 } from 'lucide-react';
 import { analyzeSentiment, SentimentAnalysisResult } from '../nlp/sentimentEngine';
 import { CustomWordRule, EngineSettings } from '../nlp/customRules';
@@ -33,17 +33,19 @@ interface LiveStreamProps {
   customWords: CustomWordRule[];
   engineSettings: EngineSettings;
   onSendToWorkbench: (text: string) => void;
+  onSendToCausal?: (payload: { headline: string; averageSentiment: number; commentCount: number; platform: string }) => void;
   /** Lifts a snapshot of the loaded comments to App (for the assistant's email report). */
   onReportData?: (data: LiveReportData | null) => void;
 }
 
-/** One comment lands every 3 seconds — a steady live-feed rhythm. */
-const REVEAL_MS = 3000;
+/** Fast live-feed reveal rhythm (250ms). */
+const REVEAL_MS = 250;
 
 export const LiveStream: React.FC<LiveStreamProps> = ({
   customWords,
   engineSettings,
   onSendToWorkbench,
+  onSendToCausal,
   onReportData,
 }) => {
   const [postUrl, setPostUrl] = useState('');
@@ -108,6 +110,15 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
       window.clearInterval(revealTimerRef.current);
       revealTimerRef.current = null;
     }
+  };
+
+  const showAllImmediately = () => {
+    stopReveal();
+    if (pullRef.current && pullRef.current.length > 0) {
+      setStreamItems(pullRef.current);
+    }
+    setStreamProgress(null);
+    setScrapeInfo('Done');
   };
 
   useEffect(() => stopReveal, []);
@@ -331,10 +342,7 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
         if (!next) {
           stopReveal();
           setStreamProgress(null);
-          const bits = [`Pulled ${scored.length} comments from ${data.platform || 'the page'}`];
-          if (aiCount > 0) bits.push(`${aiCount} scored with cloud AI`);
-          if (data.saved) bits.push('saved to database');
-          setScrapeInfo(`${bits.join(' · ')}.`);
+          setScrapeInfo('Done');
           return;
         }
         setStreamProgress(idx);
@@ -542,12 +550,24 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
           </div>
         )}
         {streamProgress !== null ? (
-          <div className="flex items-center justify-center py-2 bg-emerald-50 border border-emerald-200 rounded-lg" role="status" aria-label={`Streaming comment ${streamProgress} of the batch`}>
-            <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
+          <div className="flex items-center justify-between py-2 px-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs" role="status">
+            <div className="flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-emerald-600 shrink-0" />
+              <span className="font-semibold text-emerald-800">
+                Streaming comments ({streamProgress} of {pullRef.current?.length || 50})…
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={showAllImmediately}
+              className="px-2.5 py-1 text-2xs font-bold rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-colors shadow-2xs cursor-pointer shrink-0"
+            >
+              ⚡ Show All {pullRef.current?.length || 50} Now
+            </button>
           </div>
         ) : scrapeInfo && (
-          <div className="flex items-start gap-2 text-2xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-            <Radar className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <div className="flex items-start gap-2 text-2xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 font-medium">
+            <Radar className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-600" />
             <span>{scrapeInfo}</span>
           </div>
         )}
@@ -638,6 +658,52 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
           </span>
         </div>
       )}
+
+      {/* Causal & Predictive Forecaster Bridge for Scraped Comments */}
+      {(streamItems.length > 0 || (pullRef.current && pullRef.current.length > 0)) && (() => {
+        const activeList = pullRef.current && pullRef.current.length > 0 ? pullRef.current : streamItems;
+        const avg = Number((activeList.reduce((acc, it) => acc + it.sentiment.compound, 0) / activeList.length).toFixed(2));
+        return (
+          <div className="bg-gradient-to-r from-zinc-950 via-zinc-900 to-rose-950 border border-rose-500/30 rounded-xl p-4 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-lg">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-rose-400">
+                  Real-Data Predictive Engine Ready
+                </span>
+                {streamProgress !== null && (
+                  <span className="text-[10px] bg-rose-900/60 text-rose-200 px-2 py-0.5 rounded-full font-semibold border border-rose-700/50">
+                    Live Stream ({streamProgress}/{activeList.length})
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-zinc-200">
+                Scraped <strong>{activeList.length} real comments</strong> · Average Mood:{' '}
+                <span className="font-bold text-white">
+                  {avg > 0 ? `+${avg.toFixed(2)}` : avg.toFixed(2)}
+                </span>
+                . See what will happen to this public reaction over the next 24 hours.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                if (onSendToCausal) {
+                  onSendToCausal({
+                    headline: viewingPull?.url || postUrl || 'Scraped Social Media Post',
+                    averageSentiment: avg,
+                    commentCount: activeList.length,
+                    platform: viewingPull?.platform || 'Social Post',
+                  });
+                }
+              }}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md transition-all whitespace-nowrap cursor-pointer shrink-0"
+            >
+              <Zap className="w-3.5 h-3.5 fill-current" />
+              <span>Forecast Mood 24h Ahead</span>
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Comments table (left) + live Comment Breakdown pie (right) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

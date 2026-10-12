@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Copy, Check, Trash2, AlertCircle, 
-  BarChart2, Brain, Volume2
+  BarChart2, Brain
 } from 'lucide-react';
 import { 
   analyzeSentiment, 
@@ -11,7 +11,6 @@ import {
 import { CustomWordRule, EngineSettings } from '../nlp/customRules';
 import { fetchVaderOverall, fetchVaderSentences, fetchVaderWords, fetchAiScores, subscribeVaderHealth, VaderEmoji } from '../nlp/vaderClient';
 
-import { VoiceStudio } from './VoiceStudio';
 import { NeuralSenseModal } from './NeuralSenseModal';
 import { EmojiSentimentPanel } from './EmojiSentimentPanel';
 import { SentimentPie } from './SentimentPie';
@@ -40,9 +39,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   const [activeSentenceIndex, setActiveSentenceIndex] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [isNeuralModalOpen, setIsNeuralModalOpen] = useState(false);
-  const [activeSubView, setActiveSubView] = useState<'analytics' | 'voice'>('analytics');
   const [engineState, setEngineState] = useState<'idle' | 'connecting' | 'vader' | 'fallback'>('idle');
-  const [vaderEmoji, setVaderEmoji] = useState<{ emojis: VaderEmoji[]; compound: number } | null>(null);
+  const [vaderEmoji, setVaderEmoji] = useState<{ emojis: VaderEmoji[]; compound: number; model?: string } | null>(null);
   const vaderSeqRef = useRef(0);
   // Bumped by the health poller when the sidecar comes back while we're in
   // fallback — re-runs the effect below so scores/badge heal without typing.
@@ -121,7 +119,11 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             baseScore: wordScores[i] ?? t.baseScore,
           })),
         }));
-        setVaderEmoji({ emojis: overall.emojis, compound: overall.emojiCompound });
+        setVaderEmoji({
+          emojis: overall.emojis,
+          compound: overall.emojiCompound,
+          model: overall.emojiModel,
+        });
         setEngineState('vader');
       } catch {
         if (seq !== vaderSeqRef.current) return;
@@ -208,16 +210,6 @@ export const Workbench: React.FC<WorkbenchProps> = ({
               </div>
 
               <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => setActiveSubView('voice')}
-                  title="Voice input"
-                  className={`p-1.5 rounded-md transition-colors ${
-                    activeSubView === 'voice' ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-200/60'
-                  }`}
-                >
-                  <Volume2 className="w-3.5 h-3.5" />
-                </button>
-
                 <button
                   onClick={handleCopy}
                   title="Copy text"
@@ -336,39 +328,15 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             </div>
           )}
 
-          {/* Feature Sub-Navigation Tabs */}
-          <div className="flex items-center gap-1 bg-zinc-200/70 p-1 rounded-xl">
-            <button
-              onClick={() => setActiveSubView('analytics')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                activeSubView === 'analytics' ? 'bg-white text-zinc-900 shadow-2xs font-semibold' : 'text-zinc-600 hover:text-zinc-900'
-              }`}
-            >
-              <BarChart2 className="w-3.5 h-3.5" />
-              <span>Sentences</span>
-            </button>
-
-            <button
-              onClick={() => setActiveSubView('voice')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                activeSubView === 'voice' ? 'bg-white text-zinc-900 shadow-2xs font-semibold' : 'text-zinc-600 hover:text-zinc-900'
-              }`}
-            >
-              <Volume2 className="w-3.5 h-3.5" />
-              <span>Voice</span>
-            </button>
-          </div>
-
-          {/* Active Sub-View Panels */}
-          {activeSubView === 'analytics' && (
-            <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <BarChart2 className="w-4 h-4 text-zinc-700" />
-                  <h3 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">
-                    Sentence by Sentence
-                  </h3>
-                </div>
+          {/* Sentence by Sentence Breakdown */}
+          <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <BarChart2 className="w-4 h-4 text-zinc-700" />
+                <h3 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">
+                  Sentence by Sentence
+                </h3>
+              </div>
                 <span className="text-xs text-zinc-500">
                   Score for each of your {result.sentences.length} sentences
                 </span>
@@ -421,13 +389,6 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                 })}
               </div>
             </div>
-          )}
-
-          {activeSubView === 'voice' && (
-            <VoiceStudio
-              onAppendTranscript={(spoken) => setInputText(inputText ? inputText + ' ' + spoken : spoken)}
-            />
-          )}
 
         </div>
 
@@ -491,26 +452,6 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                 <div style={{ width: `${result.posScore}%` }} className="bg-emerald-600 transition-all duration-500" />
                 <div style={{ width: `${result.neuScore}%` }} className="bg-zinc-300 transition-all duration-500" />
                 <div style={{ width: `${result.negScore}%` }} className="bg-rose-600 transition-all duration-500" />
-              </div>
-            </div>
-
-            {/* Quick Diagnostic Metrics */}
-            <div className="grid grid-cols-2 gap-3 pt-2.5 border-t border-zinc-100 text-xs">
-              <div className="p-2 rounded-lg bg-zinc-50 border border-zinc-100">
-                <div className="text-zinc-500 mb-0.5">Subjectivity</div>
-                <div className="text-sm font-semibold font-mono text-zinc-900 tabular-nums">
-                  {(result.subjectivity * 100).toFixed(0)}%
-                  <span className="text-xs font-normal text-zinc-500 ml-1">
-                    ({result.subjectivity > 0.5 ? 'Subjective' : 'Objective'})
-                  </span>
-                </div>
-              </div>
-
-              <div className="p-2 rounded-lg bg-zinc-50 border border-zinc-100">
-                <div className="text-zinc-500 mb-0.5">Would Recommend</div>
-                <div className="text-sm font-semibold font-mono text-zinc-900 tabular-nums">
-                  {result.npsEstimation > 0 ? `+${result.npsEstimation}` : result.npsEstimation}
-                </div>
               </div>
             </div>
 
