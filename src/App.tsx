@@ -11,6 +11,7 @@ import { CausalPredictiveStudio } from './components/CausalPredictiveStudio';
 import { ReportModal } from './components/ReportModal';
 import { HelpAssistant } from './components/HelpAssistant';
 import { LiveReportData } from './lib/reportEmail';
+import type { CausalAnalysisResponse } from './nlp/causalEngine';
 import { 
   loadCustomWords, 
   loadEngineSettings, 
@@ -43,7 +44,12 @@ export default function App() {
     averageSentiment: number;
     commentCount: number;
     platform: string;
+    comments?: string[];
+    pageTitle?: string;
   } | null>(null);
+  // Latest causal forecast lifted from the studio — what the help assistant
+  // emails when the user says "send the report" on the Predictive tab.
+  const [causalAnalysis, setCausalAnalysis] = useState<CausalAnalysisResponse | null>(null);
 
   const handleSendToWorkbench = (text: string) => {
     setWorkbenchText(text);
@@ -55,6 +61,8 @@ export default function App() {
     averageSentiment: number;
     commentCount: number;
     platform: string;
+    comments?: string[];
+    pageTitle?: string;
   }) => {
     setScrapedCausalContext(payload);
     setActiveTab('causal');
@@ -79,6 +87,7 @@ export default function App() {
           <CausalPredictiveStudio
             initialScrapedContext={scrapedCausalContext}
             onClearScrapedContext={() => setScrapedCausalContext(null)}
+            onAnalysisChange={setCausalAnalysis}
           />
         </div>
 
@@ -116,6 +125,7 @@ export default function App() {
         activeTab={activeTab}
         workbench={{ text: workbenchText, result: currentReportResult }}
         live={liveReport}
+        causal={causalAnalysis}
       />
 
     </div>

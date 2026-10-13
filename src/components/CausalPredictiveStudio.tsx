@@ -51,11 +51,15 @@ export interface ScrapedContext {
   averageSentiment: number;
   commentCount: number;
   platform: string;
+  comments?: string[];
+  pageTitle?: string;
 }
 
 interface CausalPredictiveStudioProps {
   initialScrapedContext?: ScrapedContext | null;
   onClearScrapedContext?: () => void;
+  /** Latest analysis lifted to App so the help assistant can email it. */
+  onAnalysisChange?: (data: CausalAnalysisResponse | null) => void;
 }
 
 const formatSigned = (val: number | undefined | null, decimals: number = 2) => {
@@ -69,6 +73,7 @@ const formatSigned = (val: number | undefined | null, decimals: number = 2) => {
 export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
   initialScrapedContext,
   onClearScrapedContext,
+  onAnalysisChange,
 }) => {
   const [customHeadline, setCustomHeadline] = useState<string>('');
   const [severity, setSeverity] = useState<number>(8);
@@ -77,6 +82,12 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
   const [analysisData, setAnalysisData] = useState<CausalAnalysisResponse | null>(null);
   const [showPitchModal, setShowPitchModal] = useState<boolean>(false);
   const [activeTabSub, setActiveTabSub] = useState<'graph' | 'trajectory'>('trajectory');
+
+  // Lift every completed forecast to App — the help assistant emails THIS
+  // analysis when the user says "send the report to …" from the causal tab.
+  useEffect(() => {
+    onAnalysisChange?.(analysisData);
+  }, [analysisData]);
   
   // MongoDB Persistent Memory
   const [savedHistory, setSavedHistory] = useState<SavedPrediction[]>([]);
@@ -102,7 +113,7 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
   const runPipeline = async (overrideHeadline?: string, overrideBase?: number, overrideHorizon?: number) => {
     const rawHeadline = overrideHeadline !== undefined ? overrideHeadline : customHeadline;
     const headline = rawHeadline.trim() || initialScrapedContext?.headline || analysisData?.scenario_title || 'Scraped Social Post';
-    const baseSent = overrideBase !== undefined ? overrideBase : (initialScrapedContext?.averageSentiment ?? analysisData?.initial_sentiment);
+    const baseSent = overrideBase !== undefined ? overrideBase : (initialScrapedContext?.averageSentiment ?? analysisData?.baseline_sentiment_at_zero);
     const horizon = overrideHorizon !== undefined ? overrideHorizon : horizonHours;
 
     if (!headline.trim()) return;
@@ -117,6 +128,8 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
         platform: initialScrapedContext?.platform,
         url: initialScrapedContext?.headline || (headline.startsWith('http') ? headline : undefined),
         commentCount: initialScrapedContext?.commentCount,
+        commentTexts: initialScrapedContext?.comments,
+        pageTitle: initialScrapedContext?.pageTitle,
       });
       setAnalysisData(res);
       // Refresh memory from MongoDB
@@ -157,6 +170,11 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
   };
 
   const isPositiveShift = (analysisData?.treatment_effect_ate ?? -1) >= 0;
+  // Shared accent for DAG arrows/nodes so the diagram flips green on positive shifts
+  const shockHex = isPositiveShift ? '#10b981' : '#f43f5e';
+  const shockNodeBg = isPositiveShift ? 'bg-emerald-950/80 border-2 border-emerald-500' : 'bg-rose-950/80 border-2 border-rose-500';
+  const shockBadgeBg = isPositiveShift ? 'bg-emerald-500' : 'bg-rose-500';
+  const shockDescText = isPositiveShift ? 'text-emerald-300' : 'text-rose-300';
 
   return (
     <div className="space-y-6 pb-16">
@@ -588,7 +606,9 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
                 <span>The Step-by-Step Chain of Events (How One Event Affects Mood)</span>
               </h3>
               <p className="text-xs text-zinc-500 mt-0.5">
-                Shows the exact path: Breaking News &rarr; Everyday Trouble &rarr; Viral Online Anger &rarr; Final Mood.
+                {isPositiveShift
+                  ? 'Shows the exact path: Breaking News → Real-World Excitement → Viral Positive Sharing → Mood Lift.'
+                  : 'Shows the exact path: Breaking News → Everyday Trouble → Viral Online Anger → Final Mood.'}
               </p>
             </div>
           </div>
@@ -599,14 +619,14 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
               <svg className="absolute inset-0 w-full h-full pointer-events-none" xmlns="http://www.w3.org/2000/svg">
                 <defs>
                   <marker
-                    id="arrowhead-red"
+                    id="arrowhead-shock"
                     markerWidth="8"
                     markerHeight="6"
                     refX="7"
                     refY="3"
                     orient="auto"
                   >
-                    <polygon points="0 0, 8 3, 0 6" fill="#f43f5e" />
+                    <polygon points="0 0, 8 3, 0 6" fill={shockHex} />
                   </marker>
                   <marker
                     id="arrowhead-gray"
@@ -624,34 +644,34 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
                 <path
                   d="M 235 190 L 275 190"
                   fill="none"
-                  stroke="#f43f5e"
+                  stroke={shockHex}
                   strokeWidth="2.5"
-                  markerEnd="url(#arrowhead-red)"
+                  markerEnd="url(#arrowhead-shock)"
                 />
                 {/* Path 2: M1 -> M2 (from x=495 y=190 to x=535 y=190) */}
                 <path
                   d="M 495 190 L 535 190"
                   fill="none"
-                  stroke="#f43f5e"
+                  stroke={shockHex}
                   strokeWidth="2.5"
-                  markerEnd="url(#arrowhead-red)"
+                  markerEnd="url(#arrowhead-shock)"
                 />
                 {/* Path 3: M2 -> Y (from x=755 y=190 to x=795 y=190) */}
                 <path
                   d="M 755 190 L 795 190"
                   fill="none"
-                  stroke="#f43f5e"
+                  stroke={shockHex}
                   strokeWidth="3"
-                  markerEnd="url(#arrowhead-red)"
+                  markerEnd="url(#arrowhead-shock)"
                 />
                 {/* Path 4: Direct bypass (curved beneath from T to Y) */}
                 <path
                   d="M 125 245 C 125 305, 900 305, 900 245"
                   fill="none"
-                  stroke="#f43f5e"
+                  stroke={shockHex}
                   strokeWidth="1.5"
                   strokeDasharray="4 4"
-                  markerEnd="url(#arrowhead-red)"
+                  markerEnd="url(#arrowhead-shock)"
                 />
 
                 {/* Confounder Paths (Z1) */}
@@ -676,45 +696,49 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
               {/* Node: Outside Factor Z1 (Centered above) */}
               <div className="absolute left-[390px] top-[15px] w-64 p-2.5 rounded-xl text-left z-10 bg-zinc-900/95 border border-amber-500/50 shadow-md opacity-100">
                 <span className="text-amber-400 text-[9px] font-bold uppercase block">
-                  Daily Stress (Rush Hour / Commute)
+                  Outside Factor (Time of Day / Activity)
                 </span>
                 <h5 className="text-[11px] font-semibold text-zinc-200 truncate mt-0.5">
-                  {analysisData.nodes.find((n) => n.id === 'Z1')?.label || 'Rush Hour Traffic'}
+                  {analysisData.nodes.find((n) => n.id === 'Z1')?.label || 'Daily Activity Rhythm'}
                 </h5>
-                <p className="text-[9px] text-zinc-400">People already tired from commute</p>
+                <p className="text-[9px] text-zinc-400">Affects mood regardless of the news — our AI controls for it</p>
               </div>
 
               {/* Node: Step 1 Breaking News */}
-              <div className="absolute left-[20px] top-[140px] w-52 p-3 rounded-xl bg-rose-950/80 border-2 border-rose-500 shadow-lg text-left z-10">
-                <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white text-[9px] font-extrabold uppercase">
+              <div className={`absolute left-[20px] top-[140px] w-52 p-3 rounded-xl ${shockNodeBg} shadow-lg text-left z-10`}>
+                <span className={`px-1.5 py-0.5 rounded ${shockBadgeBg} text-white text-[9px] font-extrabold uppercase`}>
                   Step 1: The News
                 </span>
                 <h5 className="font-bold text-xs text-white mt-1 leading-snug truncate">
                   {analysisData.intervention_name}
                 </h5>
-                <p className="text-[10px] text-rose-300 mt-0.5">The breaking event that starts it all</p>
+                <p className={`text-[10px] ${shockDescText} mt-0.5`}>The triggering event that starts it all</p>
               </div>
 
               {/* Node: Step 2 Everyday Disruption */}
               <div className="absolute left-[280px] top-[140px] w-52 p-3 rounded-xl bg-zinc-900 border border-zinc-700 shadow-md text-left z-10">
                 <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[9px] font-bold uppercase">
-                  Step 2: Real Trouble
+                  {isPositiveShift ? 'Step 2: Real-World Buzz' : 'Step 2: Real Trouble'}
                 </span>
                 <h5 className="font-bold text-xs text-zinc-100 mt-1 leading-snug truncate">
-                  {analysisData.nodes.find((n) => n.id === 'M1')?.label || 'Operational Disruption'}
+                  {analysisData.nodes.find((n) => n.id === 'M1')?.label || (isPositiveShift ? 'Excitement & Buzz' : 'Operational Disruption')}
                 </h5>
-                <p className="text-[10px] text-zinc-400 mt-0.5">Traffic, lights off, downtime</p>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  {isPositiveShift ? 'Relief, gains, everyday wins' : 'Traffic, lights off, downtime'}
+                </p>
               </div>
 
               {/* Node: Step 3 Viral Reaction */}
               <div className="absolute left-[540px] top-[140px] w-52 p-3 rounded-xl bg-zinc-900 border border-zinc-700 shadow-md text-left z-10">
                 <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[9px] font-bold uppercase">
-                  Step 3: Viral Outrage
+                  {isPositiveShift ? 'Step 3: Viral Sharing' : 'Step 3: Viral Outrage'}
                 </span>
                 <h5 className="font-bold text-xs text-zinc-100 mt-1 leading-snug truncate">
-                  {analysisData.nodes.find((n) => n.id === 'M2')?.label || 'Social Echo'}
+                  {analysisData.nodes.find((n) => n.id === 'M2')?.label || (isPositiveShift ? 'Praise & Sharing' : 'Social Echo')}
                 </h5>
-                <p className="text-[10px] text-zinc-400 mt-0.5">People venting on TikTok &amp; X</p>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  {isPositiveShift ? 'People celebrating on TikTok & X' : 'People venting on TikTok & X'}
+                </p>
               </div>
 
               {/* Node: Final Outcome */}
@@ -734,10 +758,13 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
             {/* Explanation Footer */}
             <div className="mt-3 pt-3 border-t border-zinc-800 text-[11px] text-zinc-300 flex flex-wrap items-center justify-between gap-2">
               <span className="text-zinc-300">
-                💡 <strong>In Plain English:</strong> The news creates real everyday trouble &rarr; which drives people to complain online &rarr; which drags down the national mood.
+                💡 <strong>In Plain English:</strong>{' '}
+                {isPositiveShift
+                  ? 'The news sparks real excitement → which drives people to share praise online → which lifts up the public mood.'
+                  : 'The news creates real everyday trouble → which drives people to complain online → which drags down the national mood.'}
               </span>
               <span className="text-zinc-400">
-                Notice how everyday traffic also affects mood — our AI isolates this!
+                Notice how outside factors like time of day also affect mood — our AI isolates this!
               </span>
             </div>
           </div>
@@ -791,10 +818,10 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
                   <strong>Scrape Comments & Forecast 24h Ahead:</strong> Show the room: &ldquo;Watch this — we scrape 50 real comments from a live video. The AI calibrates directly to real public opinion and predicts how public mood will evolve over the next 24 hours.&rdquo;
                 </li>
                 <li>
-                  <strong>Click the &lsquo;Chain of Events&rsquo; Tab:</strong> Point to the screen: &ldquo;Notice how our AI traces the steps: the announcement cuts the lights &rarr; people vent online &rarr; national mood crashes. We also filter out rush-hour traffic so we don&apos;t blame daily traffic on the power company.&rdquo;
+                  <strong>Click the &lsquo;Chain of Events&rsquo; Tab:</strong> Point to the screen: &ldquo;Notice how our AI traces the steps: the news hits the real world &rarr; people react online &rarr; the overall public mood shifts. We also filter out confounders like rush-hour traffic so we don&apos;t blame the event for something else.&rdquo;
                 </li>
                 <li>
-                  <strong>Show the &lsquo;What-If&rsquo; Comparison:</strong> Point to the blue dashed line: &ldquo;Without this news, public mood would have stayed completely calm and positive (+0.12). And our Fact-Checker Agent proved this isn&apos;t a random coincidence by passing 3 strict proof tests.&rdquo;
+                  <strong>Show the &lsquo;What-If&rsquo; Comparison:</strong> Point to the blue dashed line: &ldquo;Without this news, public mood would have stayed on its normal-day baseline — and our Fact-Checker Agent proved this isn&apos;t a random coincidence by passing 3 strict proof tests.&rdquo;
                 </li>
               </ol>
             </div>
@@ -808,7 +835,7 @@ export const CausalPredictiveStudio: React.FC<CausalPredictiveStudioProps> = ({
                 <div className="p-3 rounded-lg bg-zinc-50 border border-zinc-200">
                   <p className="font-bold text-zinc-900">Lecturer: &ldquo;How do you know this is real cause and effect, not just a coincidence?&rdquo;</p>
                   <p className="text-zinc-600 mt-1">
-                    <strong>Your Answer:</strong> &ldquo;We ran our &lsquo;Fake News&rsquo; test where we fed the AI fake random text — the mood change stayed at zero. We also filtered out outside factors like rush-hour traffic. That proves the event itself caused the drop.&rdquo;
+                    <strong>Your Answer:</strong> &ldquo;We ran our &lsquo;Fake News&rsquo; test where we fed the AI fake random text — the mood change stayed at zero. We also filtered out outside factors like rush-hour traffic. That proves the event itself caused the shift, not a coincidence.&rdquo;
                   </p>
                 </div>
 

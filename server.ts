@@ -51,6 +51,7 @@ async function getMongoDb(): Promise<Db | null> {
     await mongoDb.collection('comments').createIndex({ pullId: 1 });
     await mongoDb.collection('comments').createIndex({ deviceId: 1, createdAt: -1 });
     await mongoDb.collection('predictions').createIndex({ deviceId: 1, createdAt: -1 });
+    await mongoDb.collection('reports').createIndex({ deviceId: 1, createdAt: -1 });
     console.log('MongoDB connected:', process.env.MONGO_DB || '(URI default db)');
     return mongoDb;
   } catch (error: any) {
@@ -136,6 +137,64 @@ async function recordPull(opts: {
   }
 }
 
+/**
+ * Persist one emailed report: upsert the device, insert the report record
+ * (full HTML/text kept so a past report can be re-sent later). Never throws —
+ * storage failure must not break the email response.
+ */
+async function recordReport(opts: {
+  deviceId: string;
+  device: any;
+  userAgent: string | undefined;
+  source: string; // 'workbench' | 'stream' | 'causal'
+  to: string[];
+  subject: string;
+  html: string;
+  text: string;
+  status: 'sent' | 'failed';
+  resendId: string | null;
+  error?: string | null;
+}): Promise<string | null> {
+  try {
+    const db = await getMongoDb();
+    if (!db) return null;
+    const now = new Date();
+    const userAgent = opts.userAgent || opts.device?.userAgent || '';
+    await db.collection<{ _id: string; [key: string]: any }>('devices').updateOne(
+      { _id: opts.deviceId },
+      {
+        $set: {
+          lastSeen: now,
+          userAgent,
+          clientPlatform: opts.device?.platform || '',
+          language: opts.device?.language || '',
+          screen: opts.device?.screen || '',
+          viewport: opts.device?.viewport || '',
+          timezone: opts.device?.timezone || '',
+        },
+        $setOnInsert: { firstSeen: now },
+      },
+      { upsert: true }
+    );
+    const doc = await db.collection('reports').insertOne({
+      deviceId: opts.deviceId,
+      source: opts.source,
+      to: opts.to,
+      subject: opts.subject,
+      html: opts.html.slice(0, 500_000),
+      text: (opts.text || '').slice(0, 25_000),
+      status: opts.status,
+      resendId: opts.resendId,
+      error: opts.error || null,
+      createdAt: now,
+    });
+    return String(doc.insertedId);
+  } catch (error: any) {
+    console.warn('MongoDB report save failed:', error?.message || String(error));
+    return null;
+  }
+}
+
 // ── Email a packaged report (Resend) ──
 // Called by the help assistant flow: the client builds the report HTML from
 // the analysis on screen (Workbench result or Live Comments pull) and posts it
@@ -153,6 +212,16 @@ app.post('/api/send-report', async (req, res) => {
     if (toList.length === 0 || !toList.every(emailOk)) {
       return res.status(400).json({ available: false, message: 'A valid recipient email address is required.' });
     }
+    // Device identity the report is tied to in Mongo (optional — older
+    // clients don't send it yet; storage is skipped without an id).
+    const deviceId =
+      typeof req.body?.deviceId === 'string' && DEVICE_ID_RE.test(req.body.deviceId)
+        ? req.body.deviceId
+        : '';
+    const device = req.body?.device && typeof req.body.device === 'object' ? req.body.device : null;
+    const source = ['workbench', 'stream', 'causal'].includes(req.body?.source)
+      ? String(req.body.source)
+      : 'unknown';
     if (!RESEND_KEY) {
       return res.json({
         available: false,
@@ -175,10 +244,29 @@ app.post('/api/send-report', async (req, res) => {
       text: typeof text === 'string' && text ? text.slice(0, 25000) : undefined,
     });
 
+    // Persist the report tied to this device — every send (success or fail)
+    // is stored so the user has a full history in Mongo.
+    let reportId: string | null = null;
+    if (deviceId) {
+      reportId = await recordReport({
+        deviceId,
+        device,
+        userAgent: req.headers['user-agent'],
+        source,
+        to: toList,
+        subject: String(subject || 'Cloud Sentiment report').slice(0, 200),
+        html,
+        text: typeof text === 'string' ? text : '',
+        status: error ? 'failed' : 'sent',
+        resendId: data?.id || null,
+        error: error ? error.message || 'send failed' : null,
+      });
+    }
+
     if (error) {
       return res.json({ available: false, message: error.message || 'The email could not be sent.' });
     }
-    return res.json({ available: true, id: data?.id || null });
+    return res.json({ available: true, id: data?.id || null, reportId });
   } catch (error: any) {
     console.error('Error in /api/send-report:', error);
     return res.json({
@@ -235,7 +323,7 @@ app.post('/api/assistant', async (req, res) => {
               'Use short paragraphs or tight bullet points. Never mention underlying model or provider brand names — you are simply the Cloud Sentiment assistant. ' +
               'Do not invent features that do not exist.\n\n' +
               'App knowledge:\n' +
-              '- Two tabs: "Sentiment Workbench" (analyze ONE text: compound scorecard, sentence-by-sentence scores, word scores, emoji panel, Sentiment Split pie, AI Deep Analysis modal, Voice sub-view) and "Live Comments" (paste a TikTok / YouTube / Instagram / Facebook post link → pulls real comments → table + Comment Breakdown pie + filters + negative-spike alert).\n' +
+              '- Three tabs: "Sentiment Workbench" (analyze ONE text: compound scorecard, sentence-by-sentence scores, word scores, emoji panel, Sentiment Split pie, AI Deep Analysis modal, Voice sub-view), "Live Comments" (paste a TikTok / YouTube / Instagram / Facebook post link → pulls real comments → table + Comment Breakdown pie + filters + negative-spike alert), and "Predictive Causal Forecaster" (runs a 4-agent causal analysis: pick a preset scenario or type a headline, adjust severity/horizon, Run → Chain-of-Events DAG + Mood Trajectory chart + refutation tests + plain-English narrative; Live Comments has a "Forecast Mood 24h Ahead" button that sends the real scraped comments + video title here so the DAG names the actual event).\n' +
               '- Scoring is two-tier: local rules fill the UI instantly, then the Python VADER model (sidecar on port 8000, `npm run sidecar`) overwrites scores. Badge states: "VADER model" (normal), "connecting…", "VADER offline — fallback" (local rules only — restart the sidecar). Health is polled every 15s and the app re-scores automatically when it returns.\n' +
               '- South African languages: VADER is English-only, so text scoring exactly 0.00 (isiZulu, Sesotho, Setswana, Xitsonga, Afrikaans, slang like "eish") gets one batched cloud-AI re-score — all 11 official SA languages are supported for scoring, voice, and comments.\n' +
               '- Voice input: Workbench → Voice sub-view → pick spoken language (11 SA languages) → Start → talk → Stop & Add to Text. Chrome/Edge transcribe live in the browser (free); Firefox/Safari record and transcribe in the cloud on Stop. Recordings cap at 2 minutes; mic permission required.\n' +
@@ -443,6 +531,40 @@ app.delete('/api/pulls/:id', async (req, res) => {
   } catch (error: any) {
     console.error('Error in DELETE /api/pulls/:id:', error);
     return res.json({ available: false, message: 'Could not delete that pull.' });
+  }
+});
+
+// Report history — every emailed report this device produced, newest first.
+// Metadata only (no HTML) for the list; full body is kept in Mongo for re-sends.
+app.get('/api/reports', async (req, res) => {
+  try {
+    const deviceId = String(req.query.deviceId || '');
+    if (!DEVICE_ID_RE.test(deviceId)) {
+      return res.json({ available: true, reports: [] });
+    }
+    const db = await getMongoDb();
+    if (!db) return res.json({ available: false, reports: [] });
+    const reports = await db
+      .collection('reports')
+      .find({ deviceId })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .toArray();
+    return res.json({
+      available: true,
+      reports: reports.map(r => ({
+        id: String(r._id),
+        source: String(r.source || 'unknown'),
+        subject: String(r.subject || ''),
+        to: Array.isArray(r.to) ? r.to : [],
+        status: String(r.status || 'sent'),
+        resendId: r.resendId || null,
+        createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : null,
+      })),
+    });
+  } catch (error: any) {
+    console.error('Error in GET /api/reports:', error);
+    return res.json({ available: false, reports: [] });
   }
 });
 
@@ -926,6 +1048,8 @@ app.post('/api/causal/analyze', async (req, res) => {
         severity: req.body?.severity,
         horizonHours: req.body?.horizon_hours,
         baseSentiment: req.body?.base_sentiment,
+        commentTexts: req.body?.comment_texts,
+        pageTitle: req.body?.page_title,
       });
     }
   }
@@ -935,12 +1059,16 @@ app.post('/api/causal/analyze', async (req, res) => {
     if (!finalResult.is_ai_generated && process.env.OPENAI_API_KEY) {
       try {
         const scenarioTitle = finalResult.scenario_title || finalResult.intervention_name || 'Public Event';
+        const commentTexts: string[] = Array.isArray(req.body?.comment_texts) ? req.body.comment_texts : [];
+        const commentsBlock = commentTexts.length > 0
+          ? `WHAT PEOPLE ARE ACTUALLY SAYING (real comments):\n${commentTexts.slice(0, 20).map((c: string) => `- ${String(c).slice(0, 160)}`).join('\n')}\n\n`
+          : '';
         const prompt = `You are an expert causal data scientist and public communication strategist.
 We just conducted a causal inference analysis on a public event / headline.
 
 EVENT / HEADLINE: "${scenarioTitle}"
 ${req.body?.platform ? `PLATFORM: ${req.body.platform}` : ''}
-KEY METRICS:
+${commentsBlock}KEY METRICS:
 - Initial Baseline Mood: ${finalResult.baseline_sentiment_at_zero > 0 ? '+' : ''}${finalResult.baseline_sentiment_at_zero?.toFixed(2)} (scale -1.0 to +1.0)
 - Predicted Nadir (Lowest/Peak Mood): ${finalResult.predicted_nadir_sentiment > 0 ? '+' : ''}${finalResult.predicted_nadir_sentiment?.toFixed(2)}
 - Causal Mood Shift (ATE): ${finalResult.treatment_effect_ate > 0 ? '+' : ''}${finalResult.treatment_effect_ate?.toFixed(2)} pts
@@ -951,8 +1079,9 @@ KEY METRICS:
 INSTRUCTIONS:
 1. Explain what is happening in simple, conversational, everyday plain English that anyone can understand.
 2. Directly reference the specific event ("${scenarioTitle}") and explain what is causing people to react this way, how it impacts their everyday reality (e.g. commuting costs, food prices, personal stress), and what a normal day would have been like without this event.
-3. Provide 3 specific, non-generic, actionable steps public leaders or communicators can take right now to address public concerns and restore trust.
-4. DO NOT use generic placeholders like 'Consumer Frustration' or 'Social Media Outrage Cascade'. Write natural, topic-specific prose.
+3. Ground the explanation in the REAL comments above when provided — mention the actual topics, names, and concerns people raise, not abstract categories.
+4. Provide 3 specific, non-generic, actionable steps public leaders or communicators can take right now to address the specific concerns in these comments and restore trust.
+5. DO NOT use generic placeholders like 'Consumer Frustration' or 'Social Media Outrage Cascade'. Write natural, topic-specific prose.
 
 Respond ONLY with valid JSON with this exact structure:
 {
@@ -1275,7 +1404,12 @@ app.post('/api/scrape-comments', async (req, res) => {
         deviceId: devId, device, url: parsed.toString(), platform, provider: 'apify',
         userAgent: req.headers['user-agent'], comments,
       });
-      return res.json({ available: true, platform, comments, pullId: ytPullId, saved: ytPullId !== null });
+      // Best-effort video title from the actor's items — used to ground the causal DAG.
+      const ytMeta: any = items.find((it: any) => it && typeof it.videoTitle === 'string' && it.videoTitle)
+        || items.find((it: any) => it && typeof it.text === 'string' && it.text)
+        || null;
+      const ytPageTitle = ytMeta ? String(ytMeta.videoTitle || ytMeta.text || '').trim().slice(0, 300) : '';
+      return res.json({ available: true, platform, pageTitle: ytPageTitle, comments, pullId: ytPullId, saved: ytPullId !== null });
       }
 
       // ── TikTok: comments live in a separate dataset linked from the video item ──

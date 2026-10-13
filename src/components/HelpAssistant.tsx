@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { MessageCircle, X, Send, Loader2, Sparkles } from 'lucide-react';
 import { SentimentAnalysisResult } from '../nlp/sentimentEngine';
-import { LiveReportData, buildWorkbenchReport, buildLiveReport } from '../lib/reportEmail';
+import { LiveReportData, buildWorkbenchReport, buildLiveReport, buildCausalReport } from '../lib/reportEmail';
+import type { CausalAnalysisResponse } from '../nlp/causalEngine';
+import { getDeviceId, getDeviceMeta } from '../lib/device';
 import type { NavTab } from './Header';
 
 interface ChatMessage {
@@ -15,6 +17,8 @@ interface HelpAssistantProps {
   workbench: { text: string; result: SentimentAnalysisResult };
   /** Live Comments snapshot — null until a pull/history load exists. */
   live: LiveReportData | null;
+  /** Latest causal forecast — null until a pipeline run completes. */
+  causal: CausalAnalysisResponse | null;
 }
 
 const WELCOME: ChatMessage = {
@@ -35,7 +39,7 @@ const SEND_VERB_RE = /thumela|romela|rumela|rhumela|rhumele|stuur|posta|\bsend|\
  * routes a "send the report to …" intent, the report is packaged from the
  * live app state and delivered via /api/send-report (Resend).
  */
-export const HelpAssistant: React.FC<HelpAssistantProps> = ({ activeTab, workbench, live }) => {
+export const HelpAssistant: React.FC<HelpAssistantProps> = ({ activeTab, workbench, live, causal }) => {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME]);
   const [input, setInput] = useState('');
@@ -66,6 +70,18 @@ export const HelpAssistant: React.FC<HelpAssistantProps> = ({ activeTab, workben
         `A report for this text is ready to email.`
       );
     }
+    if (activeTab === 'causal') {
+      if (!causal) return 'Current tab: Predictive Causal Forecaster. No forecast has been run yet.';
+      const s = (n: number) => `${n > 0 ? '+' : ''}${n.toFixed(2)}`;
+      return (
+        `Current tab: Predictive Causal Forecaster. Latest forecast: "${causal.scenario_title}" ` +
+        `(treatment: ${causal.intervention_name}). Baseline ${s(causal.baseline_sentiment_at_zero)} ` +
+        `→ predicted nadir ${s(causal.predicted_nadir_sentiment)}, mood shift ${s(causal.treatment_effect_ate)} pts ` +
+        `over ${causal.forecast_horizon_hours}h, peak impact in ${causal.time_to_peak_impact_hours?.toFixed(1) ?? '?'}h, ` +
+        `robustness ${causal.causal_robustness_score?.toFixed(0) ?? '?'}%. ` +
+        `A forecast report for this scenario is ready to email.`
+      );
+    }
     if (!live) return 'Current tab: Live Comments. No comments loaded yet.';
     return (
       `Current tab: Live Comments. ${live.count} comments loaded from ${live.platform}` +
@@ -75,7 +91,11 @@ export const HelpAssistant: React.FC<HelpAssistantProps> = ({ activeTab, workben
   };
 
   const hasReport = () =>
-    activeTab === 'workbench' ? workbench.text.trim().length > 0 : !!live && live.count > 0;
+    activeTab === 'causal'
+      ? !!causal
+      : activeTab === 'workbench'
+        ? workbench.text.trim().length > 0
+        : !!live && live.count > 0;
 
   /** Package the on-screen report and POST it to /api/send-report. */
   const deliverReport = async (emails: string[]) => {
@@ -83,14 +103,22 @@ export const HelpAssistant: React.FC<HelpAssistantProps> = ({ activeTab, workben
     if (!hasReport()) {
       setMessages(m => [
         ...m,
-        { role: 'assistant', content: "There's no completed analysis to send yet — analyze some text (or pull comments) first, then ask me again." },
+        {
+          role: 'assistant',
+          content:
+            activeTab === 'causal'
+              ? "There's no forecast to send yet — run the pipeline on the Predictive tab first, then ask me again."
+              : "There's no completed analysis to send yet — analyze some text (or pull comments) first, then ask me again.",
+        },
       ]);
       return;
     }
     const report =
-      activeTab === 'workbench'
-        ? buildWorkbenchReport(workbench.result)
-        : buildLiveReport(live!);
+      activeTab === 'causal' && causal
+        ? buildCausalReport(causal)
+        : activeTab === 'workbench'
+          ? buildWorkbenchReport(workbench.result)
+          : buildLiveReport(live!);
     setMessages(m => [
       ...m,
       { role: 'assistant', content: `Packaging the report and emailing it to ${to}…` },
@@ -104,6 +132,11 @@ export const HelpAssistant: React.FC<HelpAssistantProps> = ({ activeTab, workben
           subject: report.subject,
           html: report.html,
           text: report.text,
+          // Which screen this came from + the device that requested it —
+          // the server stores every report in Mongo tied to this device.
+          source: activeTab,
+          deviceId: getDeviceId(),
+          device: getDeviceMeta(),
         }),
       });
       const sendData = await sendRes.json().catch(() => null);

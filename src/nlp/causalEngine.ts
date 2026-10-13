@@ -177,6 +177,8 @@ export async function executeCausalAnalysis(params: {
   platform?: string;
   url?: string;
   commentCount?: number;
+  commentTexts?: string[];
+  pageTitle?: string;
 }): Promise<CausalAnalysisResponse> {
   try {
     const deviceId = getDeviceId();
@@ -193,6 +195,8 @@ export async function executeCausalAnalysis(params: {
         platform: params.platform,
         url: params.url,
         commentCount: params.commentCount,
+        comment_texts: params.commentTexts,
+        page_title: params.pageTitle,
       }),
     });
 
@@ -219,6 +223,8 @@ export function computeLocalCausalModel(params: {
   severity?: number;
   horizonHours?: number;
   baseSentiment?: number;
+  commentTexts?: string[];
+  pageTitle?: string;
 }): CausalAnalysisResponse {
   const severity = Math.max(1, Math.min(10, params.severity ?? 8));
   const horizon = Math.max(6, Math.min(24, params.horizonHours ?? 24));
@@ -314,6 +320,30 @@ export function computeLocalCausalModel(params: {
         m2 = 'Social Media Reaction Cascade';
       }
     }
+
+    // Ground the local model in real context when provided (no OpenAI available)
+    const pageTopic = params.pageTitle?.trim();
+    if (pageTopic) {
+      title = `Public Reaction: ${pageTopic}`;
+      treatment = pageTopic.length > 80 ? pageTopic.slice(0, 80) : pageTopic;
+    } else if (params.commentTexts && params.commentTexts.length > 0) {
+      const stop = new Set(
+        'the and for you your that this with are was were have has had not but what when who how all any can will just like get got its they them there would could should about from into out one two our us she him his her been being really very much more most some such than too also only even well back still here where which while after before over under again dont did doesnt does cant wont im youre ive youve hes shes weve theyre let lets lol bro man guy people comment video youtube tiktok instagram facebook'
+          .split(' ')
+      );
+      const freq = new Map<string, number>();
+      for (const t of params.commentTexts) {
+        for (const w of (t.toLowerCase().match(/[a-z][a-z'-]{2,}/g) || [])) {
+          if (!stop.has(w)) freq.set(w, (freq.get(w) || 0) + 1);
+        }
+      }
+      const top = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+      if (top.length > 0) {
+        const topic = top.join(' & ');
+        title = `Public Reaction: ${topic}`;
+        treatment = topic;
+      }
+    }
   }
 
   const severityNorm = severity / 8.0;
@@ -370,6 +400,8 @@ export function computeLocalCausalModel(params: {
     }
 
     pred = Math.max(-1.0, Math.min(1.0, pred));
+    // 95% CI width: baseline noise grows with forecast distance and shock size
+    const uncertainty = Number((0.05 + 0.01 * Math.max(0, h) + 0.08 * Math.abs(shockVal)).toFixed(3));
     let actionTakenVal: number | null = null;
     if (h >= 0) {
       if (causalAte < 0) {

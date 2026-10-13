@@ -33,7 +33,7 @@ interface LiveStreamProps {
   customWords: CustomWordRule[];
   engineSettings: EngineSettings;
   onSendToWorkbench: (text: string) => void;
-  onSendToCausal?: (payload: { headline: string; averageSentiment: number; commentCount: number; platform: string }) => void;
+  onSendToCausal?: (payload: { headline: string; averageSentiment: number; commentCount: number; platform: string; comments?: string[]; pageTitle?: string }) => void;
   /** Lifts a snapshot of the loaded comments to App (for the assistant's email report). */
   onReportData?: (data: LiveReportData | null) => void;
 }
@@ -56,6 +56,9 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
   const [filterType, setFilterType] = useState<'all' | 'Positive' | 'Negative'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [streamProgress, setStreamProgress] = useState<number | null>(null);
+  // Real video/post title from the scrape — fed to the causal engine so the
+  // Chain of Events names the actual topic, not a generic placeholder.
+  const [pageTitle, setPageTitle] = useState<string>('');
 
   // Pull history — past scrapes persisted in MongoDB for THIS device
   // (list loads on mount; "View" re-scores a saved pull into the table).
@@ -258,6 +261,7 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
     setStreamProgress(null);
     setScrapeInfo(null);
     setScrapeError(null);
+    setPageTitle('');
     setEngineState('idle');
     void loadHistory();
   };
@@ -286,6 +290,7 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
     setScrapeInfo(null);
     setStreamProgress(null);
     setViewingPull(null);
+    setPageTitle('');
     setEngineState('idle');
     try {
       const res = await fetch('/api/scrape-comments', {
@@ -305,6 +310,7 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
         );
         return;
       }
+      setPageTitle(typeof data.pageTitle === 'string' ? data.pageTitle : '');
       const now = new Date().toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit',
@@ -693,6 +699,8 @@ export const LiveStream: React.FC<LiveStreamProps> = ({
                     averageSentiment: avg,
                     commentCount: activeList.length,
                     platform: viewingPull?.platform || 'Social Post',
+                    comments: activeList.slice(0, 40).map(it => it.text),
+                    pageTitle,
                   });
                 }
               }}

@@ -1,4 +1,5 @@
 import { SentimentAnalysisResult } from '../nlp/sentimentEngine';
+import type { CausalAnalysisResponse } from '../nlp/causalEngine';
 
 /** Snapshot of the Live Comments table, lifted to App for report packaging. */
 export interface LiveReportData {
@@ -164,5 +165,100 @@ export function buildLiveReport(live: LiveReportData): BuiltReport {
       `Cloud Sentiment — Live Comments report\n` +
       `${live.platform} · ${live.count} comments\n` +
       `Positive ${live.pos} · Neutral ${live.neu} · Negative ${live.neg}`,
+  };
+}
+
+/** Key metrics tile in the causal report — one cell of the 2×3 grid. */
+const metricTile = (label: string, value: string, color: string) => `
+  <td align="center" style="padding:12px 6px;width:33%;">
+    <div style="font-size:18px;font-weight:bold;color:${color};font-family:monospace;">${esc(value)}</div>
+    <div style="font-size:11px;color:#71717a;margin-top:2px;">${esc(label)}</div>
+  </td>`;
+
+export function buildCausalReport(data: CausalAnalysisResponse): BuiltReport {
+  const sign = (n: number | undefined | null) =>
+    n === undefined || n === null || isNaN(n) ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(2)}`;
+  const ateColor = data.treatment_effect_ate < -0.02 ? '#e11d48' : data.treatment_effect_ate > 0.02 ? '#059669' : '#52525b';
+  const edges = data.edges.slice(0, 10);
+  const tests = data.refutation_tests.slice(0, 6);
+  const narr = (data.causal_pathway_narrative || '').slice(0, 1200);
+
+  const inner = `
+    <p style="font-size:13px;color:#52525b;margin:0 0 14px;">
+      <strong style="color:#18181b;font-size:15px;">${esc(data.scenario_title)}</strong><br/>
+      Treatment: ${esc(data.intervention_name)} · ${data.forecast_horizon_hours}h forecast horizon
+      ${data.is_ai_generated ? `<br/><span style="font-size:11px;color:#a1a1aa;">Synthesized by ${esc(data.ai_model || 'AI')}</span>` : ''}
+    </p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#f4f4f5;border-radius:12px;margin-bottom:16px;">
+      <tr>
+        ${metricTile('Baseline @ T0', sign(data.baseline_sentiment_at_zero), '#52525b')}
+        ${metricTile('Predicted nadir', sign(data.predicted_nadir_sentiment), data.predicted_nadir_sentiment < -0.1 ? '#e11d48' : '#52525b')}
+        ${metricTile('Mood shift (ATE)', sign(data.treatment_effect_ate), ateColor)}
+      </tr>
+      <tr>
+        ${metricTile('Peak impact in', `${data.time_to_peak_impact_hours?.toFixed(1) ?? '—'}h`, '#18181b')}
+        ${metricTile('Recovery half-life', `${data.recovery_half_life_hours?.toFixed(1) ?? '—'}h`, '#18181b')}
+        ${metricTile('Robustness', `${data.causal_robustness_score?.toFixed(0) ?? '—'}%`, '#18181b')}
+      </tr>
+    </table>
+    ${narr ? `
+    <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:8px;">
+      What this means
+    </div>
+    <p style="font-size:13px;color:#3f3f46;line-height:1.6;margin:0 0 16px;">${esc(narr)}</p>` : ''}
+    <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:8px;">
+      Causal chain (DAG)
+    </div>
+    ${edges
+      .map(
+        e => `
+      <div style="border:1px solid #e4e4e7;border-radius:8px;padding:8px 10px;margin-bottom:6px;">
+        <div style="font-size:12px;font-weight:bold;color:#18181b;">
+          ${esc(e.source)} → ${esc(e.target)}
+          ${e.is_confounder ? '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:9999px;font-size:10px;font-weight:700;margin-left:6px;">CONFOUNDER</span>' : ''}
+          <span style="float:right;font-family:monospace;color:#71717a;font-weight:normal;">β ${e.effect_size?.toFixed(2) ?? '—'} · p ${e.p_value?.toFixed(3) ?? '—'}</span>
+        </div>
+        <div style="font-size:12px;color:#3f3f46;margin-top:2px;">${esc(e.mechanism || '')}</div>
+      </div>`
+      )
+      .join('')}
+    ${data.edges.length > 10 ? `<p style="font-size:11px;color:#a1a1aa;">…and ${data.edges.length - 10} more edges.</p>` : ''}
+    ${data.recommended_mitigations.length > 0 ? `
+    <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:8px;">
+      Recommended mitigations
+    </div>
+    ${data.recommended_mitigations
+      .slice(0, 5)
+      .map((m, i) => `
+      <div style="border-left:3px solid ${ateColor};padding:6px 10px;margin-bottom:6px;background:#fafafa;">
+        <span style="font-size:12px;font-weight:bold;color:#18181b;">${i + 1}.</span>
+        <span style="font-size:12px;color:#3f3f46;">${esc(m)}</span>
+      </div>`)
+      .join('')}` : ''}
+    ${tests.length > 0 ? `
+    <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:8px;">
+      Refutation tests
+    </div>
+    ${tests
+      .map(
+        t => `
+      <div style="font-size:12px;color:#3f3f46;padding:3px 0;">
+        ${t.passed ? '✅' : '❌'} ${esc(t.name || '')} — ${esc(t.verdict || (t.passed ? 'held' : 'failed'))}
+      </div>`
+      )
+      .join('')}` : ''}
+  `;
+
+  return {
+    subject: `Cloud Sentiment forecast — ${data.scenario_title} (${sign(data.treatment_effect_ate)} pts)`,
+    html: shell('Causal Forecast Report', new Date().toLocaleString(), inner),
+    text:
+      `Cloud Sentiment — Causal Forecast report\n` +
+      `Scenario: ${data.scenario_title}\n` +
+      `Treatment: ${data.intervention_name}\n` +
+      `Baseline: ${sign(data.baseline_sentiment_at_zero)} → Nadir: ${sign(data.predicted_nadir_sentiment)}\n` +
+      `Mood shift (ATE): ${sign(data.treatment_effect_ate)} pts over ${data.forecast_horizon_hours}h\n` +
+      `Peak impact: ${data.time_to_peak_impact_hours?.toFixed(1) ?? '—'}h · Robustness: ${data.causal_robustness_score?.toFixed(0) ?? '—'}%\n` +
+      (narr ? `\n${narr.slice(0, 600)}` : ''),
   };
 }

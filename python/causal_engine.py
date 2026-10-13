@@ -12,6 +12,7 @@ import json
 import math
 import os
 import random
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -610,17 +611,24 @@ def _generate_openai_explanation(
     counterfactual_delta: float,
     horizon_hours: int,
     platform: Optional[str] = None,
+    comment_texts: Optional[List[str]] = None,
 ) -> Optional[Tuple[str, List[str]]]:
     api_key = _get_openai_api_key()
     if not api_key:
         return None
+
+    comments_block = ""
+    if comment_texts:
+        sample = "\n".join(f"- {t.strip()[:160]}" for t in comment_texts[:20] if t and t.strip())
+        if sample:
+            comments_block = f"\nWHAT PEOPLE ARE ACTUALLY SAYING (real comments):\n{sample}\n"
 
     prompt = f"""You are an expert causal data scientist and public communication strategist.
 We just conducted a causal inference analysis on a public event / headline.
 
 EVENT / HEADLINE: "{title}"
 {f'PLATFORM: {platform}' if platform else ''}
-KEY METRICS:
+{comments_block}KEY METRICS:
 - Initial Baseline Mood: {base_sentiment:+.2f} (scale from -1.0 very negative to +1.0 very positive)
 - Predicted Nadir (Lowest/Peak Mood): {nadir_point:+.2f}
 - Causal Mood Shift (ATE): {causal_ate:+.2f} pts
@@ -631,8 +639,9 @@ KEY METRICS:
 INSTRUCTIONS:
 1. Explain what is happening in simple, conversational, everyday plain English that anyone can understand.
 2. Directly reference the specific event ("{title}") and explain what is causing people to react this way, how it impacts their everyday reality (e.g. commuting costs, food price knock-on effects, service delivery, or personal stress), and what a normal day would have been like without this event.
-3. Provide 3 specific, non-generic, actionable steps public leaders or communicators can take right now to address public concerns and restore trust.
-4. DO NOT use generic placeholders like 'Consumer Frustration' or 'Social Media Outrage Cascade'. Write natural, topic-specific prose.
+3. Ground the explanation in the REAL comments above when provided — mention the actual topics, names, and concerns people raise, not abstract categories.
+4. Provide 3 specific, non-generic, actionable steps public leaders or communicators can take right now to address the specific concerns in these comments and restore trust.
+5. DO NOT use generic placeholders like 'Consumer Frustration' or 'Social Media Outrage Cascade'. Write natural, topic-specific prose.
 
 Respond ONLY with valid JSON with this exact structure:
 {{
@@ -673,6 +682,99 @@ Respond ONLY with valid JSON with this exact structure:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Real-Context Grounding: derive specific mediators from actual comments
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Lightweight stopword list for the local (no-OpenAI) keyword fallback.
+_STOPWORDS = set(
+    """a an the and or but if then else for while of to in on at by with from up down
+    out off over under again once here there all any both each few more most other some
+    such no nor not only own same so than too very can will just don should now i me my
+    we our you your he him his she her it its they them their what which who whom this
+    that these those am is are was were be been being have has had having do does did
+    doing would could ought im ive youve hes shes weve theyve dont doesnt didnt isnt
+    wasnt arent werent couldnt shouldnt wouldnt lets thats theres here's there's
+    im youre hes were theyre dont doesnt didnt lol ooo oh wow yeah yes ok okay um uh
+    bro man like get got go going go really just about""".split()
+)
+
+
+def _extract_keywords(comment_texts: List[str], top_n: int = 6) -> List[str]:
+    """Local fallback: pull the most frequent meaningful words from the real comments."""
+    freq: Dict[str, int] = {}
+    for text in comment_texts:
+        for word in re.findall(r"[a-zA-Z][a-zA-Z'-]{2,}", (text or "").lower()):
+            if word not in _STOPWORDS:
+                freq[word] = freq.get(word, 0) + 1
+    ranked = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [w for w, _ in ranked[:top_n]]
+
+
+def _generate_context_labels(
+    page_title: str,
+    comment_texts: List[str],
+    base_sentiment: float,
+    platform: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
+    """Ask OpenAI what the conversation is ACTUALLY about, based on the real
+    comments, and return specific causal-DAG labels (treatment, mediators,
+    confounders) grounded in that topic — never generic placeholders."""
+    api_key = _get_openai_api_key()
+    if not api_key or not comment_texts:
+        return None
+
+    sample = "\n".join(f"- {t.strip()[:160]}" for t in comment_texts[:25] if t and t.strip())
+    if not sample:
+        return None
+
+    prompt = f"""You are a causal inference scientist labeling a structural causal model from REAL social media comments.
+The overall comment sentiment is {base_sentiment:+.2f} (-1 very negative to +1 very positive).
+{f'PLATFORM: {platform}' if platform else ''}
+{f'VIDEO / POST TITLE: "{page_title}"' if page_title else 'The video/post title is unknown — infer the topic from the comments.'}
+
+SAMPLE OF REAL COMMENTS:
+{sample}
+
+Based ONLY on what these comments are actually discussing, return short, specific, topic-aware causal labels (max ~8 words each, plain English) as a JSON object:
+{{
+  "event_title": "What this video/post is really about, as a short event name (e.g. 'SARB repo rate cut debate', 'Fuel price hike announcement')",
+  "treatment": "The specific triggering event in causal terms",
+  "mediator_1": "The immediate real-world mechanism people discuss (e.g. 'Household debt relief from cheaper loans')",
+  "mediator_2": "How the reaction spreads online (e.g. 'Political blame framing goes viral')",
+  "confounder_1": "An outside factor relevant to THIS topic that also moves mood",
+  "confounder_2": "Another outside factor relevant to THIS topic"
+}}"""
+
+    try:
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps({
+                "model": "gpt-4o-mini",
+                "temperature": 0.3,
+                "max_tokens": 350,
+                "response_format": {"type": "json_object"},
+                "messages": [{"role": "user", "content": prompt}],
+            }).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=9) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            parsed = json.loads(data["choices"][0]["message"]["content"])
+            out: Dict[str, str] = {}
+            for key in ("event_title", "treatment", "mediator_1", "mediator_2", "confounder_1", "confounder_2"):
+                val = parsed.get(key)
+                if isinstance(val, str) and val.strip():
+                    out[key] = val.strip()[:160]
+            return out or None
+    except Exception as e:
+        print(f"[CausalEngine] OpenAI context-labels error: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5. Multi-Agent Orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -691,6 +793,8 @@ class CausalEngineOrchestrator:
         horizon_hours: int = 24,
         base_sentiment: Optional[float] = None,
         platform: Optional[str] = None,
+        comment_texts: Optional[List[str]] = None,
+        page_title: Optional[str] = None,
     ) -> CausalAnalysisResponse:
         severity = max(1, min(10, severity))
         horizon_hours = max(6, min(24, horizon_hours))
@@ -775,6 +879,33 @@ class CausalEngineOrchestrator:
             nadir_delay = 3.0
             half_life = 18.0
 
+            # ── Ground the DAG in the real video/comments when provided ──
+            # Uses OpenAI (if key present) to name the event + mediators from the
+            # actual comments; falls back to local keyword extraction so labels
+            # are never generic when we have real text to work with.
+            if comment_texts:
+                context_labels = _generate_context_labels(
+                    page_title=page_title or title,
+                    comment_texts=comment_texts,
+                    base_sentiment=base_sentiment,
+                    platform=platform,
+                )
+                if context_labels:
+                    title = context_labels.get("event_title") or title
+                    treatment_name = context_labels.get("treatment") or treatment_name
+                    m1 = context_labels.get("mediator_1") or m1
+                    m2 = context_labels.get("mediator_2") or m2
+                    z1 = context_labels.get("confounder_1") or z1
+                    z2 = context_labels.get("confounder_2") or z2
+                else:
+                    # Local fallback: at least name the video/topic from real text
+                    topic = (page_title or "").strip()
+                    if not topic:
+                        kws = _extract_keywords(comment_texts, top_n=3)
+                        topic = " & ".join(kws) if kws else "this post"
+                    title = f"Public Reaction: {topic}"
+                    treatment_name = topic[:80]
+
         # Scale shock by severity slider (1 to 10)
         severity_norm = severity / 8.0
         
@@ -825,6 +956,7 @@ class CausalEngineOrchestrator:
             counterfactual_delta=sim_results["counterfactual_delta"],
             horizon_hours=horizon_hours,
             platform=platform,
+            comment_texts=comment_texts,
         )
 
         if openai_result:

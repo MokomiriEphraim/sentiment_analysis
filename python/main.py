@@ -270,6 +270,8 @@ class CausalAnalyzeRequest(BaseModel):
     horizon_hours: int = 24
     base_sentiment: float | None = None
     platform: str | None = None
+    comment_texts: list[str] | None = None
+    page_title: str | None = None
 
 
 @app.get("/causal/presets")
@@ -305,6 +307,8 @@ def causal_analyze(req: CausalAnalyzeRequest) -> Dict:
         horizon_hours=req.horizon_hours,
         base_sentiment=req.base_sentiment,
         platform=req.platform,
+        comment_texts=req.comment_texts,
+        page_title=req.page_title,
     )
     return res.model_dump()
 
