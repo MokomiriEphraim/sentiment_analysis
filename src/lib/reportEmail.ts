@@ -178,66 +178,182 @@ const metricTile = (label: string, value: string, color: string) => `
 export function buildCausalReport(data: CausalAnalysisResponse): BuiltReport {
   const sign = (n: number | undefined | null) =>
     n === undefined || n === null || isNaN(n) ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(2)}`;
-  const ateColor = data.treatment_effect_ate < -0.02 ? '#e11d48' : data.treatment_effect_ate > 0.02 ? '#059669' : '#52525b';
-  const edges = data.edges.slice(0, 10);
+
+  // Direction of the shift — drives every conditional phrase so nothing is
+  // hardcoded to the negative case ("dip", "low point", red, …).
+  const ate = data.treatment_effect_ate ?? 0;
+  const dir = ate < -0.02 ? 'down' : ate > 0.02 ? 'up' : 'flat';
+  const dirColor = dir === 'down' ? '#e11d48' : dir === 'up' ? '#059669' : '#52525b';
+  const extremeNoun = dir === 'up' ? 'peak' : 'low point';
+  const extremeVerb = dir === 'up' ? 'climb' : dir === 'down' ? 'drop' : 'move';
+  const peakH = data.time_to_peak_impact_hours;
+  const halfH = data.recovery_half_life_hours;
+  const rob = data.causal_robustness_score;
+  const narr = (data.causal_pathway_narrative || '').trim();
+  const firstAction = (data.recommended_mitigations || []).find(m => m && m.trim());
+
+  // Human names for the DAG nodes (e.g. "Implementation of Stage 6
+  // load-shedding") so the email never shows bare T / M1 / Z1 codes.
+  const nodeLabel: Record<string, string> = {};
+  for (const n of data.nodes) nodeLabel[n.id] = n.label || n.id;
+  const strengthWord = (b: number | undefined) => {
+    const a = Math.abs(b ?? 0);
+    return a >= 0.6 ? 'strong' : a >= 0.3 ? 'moderate' : 'small';
+  };
+  const edges = data.edges.slice(0, 8);
   const tests = data.refutation_tests.slice(0, 6);
-  const narr = (data.causal_pathway_narrative || '').slice(0, 1200);
+
+  // ── Mood journey chart (plain table cells — renders in Gmail/Outlook, no SVG) ──
+  const series = Array.isArray(data.forecast_series) ? data.forecast_series : [];
+  const stripColor = (v: number) =>
+    v <= -0.5 ? '#991b1b' : v <= -0.25 ? '#dc2626' : v <= -0.05 ? '#fca5a5'
+    : v < 0.15 ? '#e4e4e7' : v < 0.4 ? '#86efac' : '#15803d';
+  let strip = '';
+  if (series.length > 0) {
+    const step = Math.max(1, Math.ceil(series.length / 16));
+    const picked = series.filter((_, i) => i % step === 0);
+    if (atZeroMissing(picked, series)) picked.push(series.find(p => p.hour === 0)!);
+    picked.sort((a, b) => a.hour - b.hour);
+    strip = `
+    <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:10px;">
+      Mood journey — ${data.forecast_horizon_hours} hours ahead
+    </div>
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:6px;">
+      <tr>
+        ${picked
+          .map(p => {
+            const isNow = p.hour === 0;
+            return `<td style="width:18px;height:36px;background:${stripColor(p.predicted_sentiment)};${
+              isNow ? 'outline:2px solid #18181b;outline-offset:-2px;' : 'border-right:1px solid #fff;'
+            }" title="${esc(p.timestamp_label)}: ${sign(p.predicted_sentiment)}"></td>`;
+          })
+          .join('')}
+      </tr>
+    </table>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:4px;">
+      <tr>
+        <td align="left" style="font-size:10px;color:#a1a1aa;">12h before</td>
+        <td align="center" style="font-size:10px;color:#18181b;font-weight:bold;">▲ the event</td>
+        <td align="right" style="font-size:10px;color:#a1a1aa;">+${data.forecast_horizon_hours}h after</td>
+      </tr>
+    </table>
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:16px;">
+      <tr>
+        <td style="padding-right:6px;"><span style="color:#dc2626;">■</span> <span style="font-size:10px;color:#71717a;">worse</span></td>
+        <td style="padding-right:6px;"><span style="color:#e4e4e7;">■</span> <span style="font-size:10px;color:#71717a;">steady</span></td>
+        <td><span style="color:#15803d;">■</span> <span style="font-size:10px;color:#71717a;">better</span></td>
+      </tr>
+    </table>`;
+  }
+
+  // ── Before / extreme comparison bars (proportional to the -1…+1 scale) ──
+  const bar = (label: string, value: number, color: string) => `
+    <tr>
+      <td style="padding:6px 10px 6px 0;font-size:12px;color:#3f3f46;white-space:nowrap;">${esc(label)}</td>
+      <td style="padding:6px 0;width:100%;">
+        <div style="background:#f4f4f5;border-radius:9999px;height:14px;">
+          <div style="background:${color};height:14px;border-radius:9999px;width:${Math.min(100, Math.abs(value) * 100).toFixed(0)}%;"></div>
+        </div>
+      </td>
+      <td style="padding:6px 0 6px 10px;font-size:13px;font-weight:bold;font-family:monospace;color:${color};white-space:nowrap;">${sign(value)}</td>
+    </tr>`;
+  const beforeVal = data.baseline_sentiment_at_zero ?? 0;
+  const extremeVal = data.predicted_nadir_sentiment ?? 0;
+  const extremeColor = extremeVal < -0.1 ? '#e11d48' : extremeVal > 0.1 ? '#059669' : '#52525b';
+  const bars = series.length > 0 ? `
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin-bottom:16px;">
+      ${bar('Mood before the event', beforeVal, '#52525b')}
+      ${bar(`Mood at the ${extremeNoun}`, extremeVal, extremeColor)}
+    </table>` : '';
+
+  // ── In-short box: the decision-maker's summary, written from the numbers ──
+  const inShort =
+    dir === 'flat'
+      ? `Public mood is expected to stay roughly where it is over the next ${data.forecast_horizon_hours} hours — no significant shift predicted.`
+      : `Public mood is expected to ${extremeVerb} by about ${Math.abs(ate).toFixed(2)} points (the scale runs from -1 very negative to +1 very positive), reaching its ${extremeNoun} around ${
+          peakH !== undefined && peakH !== null ? `${peakH.toFixed(1)} hours` : 'a few hours'
+        } after the event.` +
+        (halfH !== undefined && halfH !== null
+          ? ` After that it should start recovering — roughly halfway back to normal in about ${halfH.toFixed(0)} hours.`
+          : '');
+  const confidenceLine =
+    rob !== undefined && rob !== null
+      ? ` Confidence in this forecast: ${rob.toFixed(0)}% (the higher, the more dependable the pattern).`
+      : '';
 
   const inner = `
     <p style="font-size:13px;color:#52525b;margin:0 0 14px;">
       <strong style="color:#18181b;font-size:15px;">${esc(data.scenario_title)}</strong><br/>
-      Treatment: ${esc(data.intervention_name)} · ${data.forecast_horizon_hours}h forecast horizon
-      ${data.is_ai_generated ? `<br/><span style="font-size:11px;color:#a1a1aa;">Synthesized by ${esc(data.ai_model || 'AI')}</span>` : ''}
+      What happened: ${esc(data.intervention_name)} · looking ${data.forecast_horizon_hours} hours ahead
     </p>
+
+    <div style="background:#f4f4f5;border-left:4px solid ${dirColor};border-radius:0 10px 10px 0;padding:12px 14px;margin-bottom:8px;">
+      <div style="font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;margin-bottom:4px;">In short</div>
+      <div style="font-size:13px;color:#18181b;line-height:1.55;margin:0;">${esc(inShort + confidenceLine)}</div>
+    </div>
+    ${firstAction ? `
+    <div style="background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:10px 14px;margin-bottom:16px;">
+      <div style="font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;margin-bottom:4px;">What to do now</div>
+      <div style="font-size:13px;color:#18181b;line-height:1.5;margin:0;">${esc(firstAction)}</div>
+    </div>` : ''}
+
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#f4f4f5;border-radius:12px;margin-bottom:16px;">
       <tr>
-        ${metricTile('Baseline @ T0', sign(data.baseline_sentiment_at_zero), '#52525b')}
-        ${metricTile('Predicted nadir', sign(data.predicted_nadir_sentiment), data.predicted_nadir_sentiment < -0.1 ? '#e11d48' : '#52525b')}
-        ${metricTile('Mood shift (ATE)', sign(data.treatment_effect_ate), ateColor)}
+        ${metricTile('Mood before', sign(beforeVal), '#52525b')}
+        ${metricTile(`Mood at the ${extremeNoun}`, sign(extremeVal), extremeColor)}
+        ${metricTile('Overall mood change', sign(ate), dirColor)}
       </tr>
       <tr>
-        ${metricTile('Peak impact in', `${data.time_to_peak_impact_hours?.toFixed(1) ?? '—'}h`, '#18181b')}
-        ${metricTile('Recovery half-life', `${data.recovery_half_life_hours?.toFixed(1) ?? '—'}h`, '#18181b')}
-        ${metricTile('Robustness', `${data.causal_robustness_score?.toFixed(0) ?? '—'}%`, '#18181b')}
+        ${metricTile(dir === 'up' ? 'Reaches its peak after' : 'Hits its low after', peakH !== undefined && peakH !== null ? `${peakH.toFixed(1)}h` : '—', '#18181b')}
+        ${metricTile('Time to start recovering', halfH !== undefined && halfH !== null ? `${halfH.toFixed(0)}h` : '—', '#18181b')}
+        ${metricTile('Confidence', rob !== undefined && rob !== null ? `${rob.toFixed(0)}%` : '—', '#18181b')}
       </tr>
     </table>
+
+    ${bars}
+    ${strip}
+
     ${narr ? `
     <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:8px;">
-      What this means
+      What this means, in plain English
     </div>
     <p style="font-size:13px;color:#3f3f46;line-height:1.6;margin:0 0 16px;">${esc(narr)}</p>` : ''}
+
+    ${edges.length > 0 ? `
     <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:8px;">
-      Causal chain (DAG)
+      How one thing leads to another
     </div>
     ${edges
       .map(
         e => `
       <div style="border:1px solid #e4e4e7;border-radius:8px;padding:8px 10px;margin-bottom:6px;">
         <div style="font-size:12px;font-weight:bold;color:#18181b;">
-          ${esc(e.source)} → ${esc(e.target)}
-          ${e.is_confounder ? '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:9999px;font-size:10px;font-weight:700;margin-left:6px;">CONFOUNDER</span>' : ''}
-          <span style="float:right;font-family:monospace;color:#71717a;font-weight:normal;">β ${e.effect_size?.toFixed(2) ?? '—'} · p ${e.p_value?.toFixed(3) ?? '—'}</span>
+          ${esc(nodeLabel[e.source] || e.source)} → ${esc(nodeLabel[e.target] || e.target)}
+          ${e.is_confounder ? '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:9999px;font-size:10px;font-weight:700;margin-left:6px;">OUTSIDE FACTOR</span>' : ''}
+          <span style="color:#a1a1aa;font-weight:normal;"> · ${strengthWord(e.effect_size)} influence</span>
         </div>
         <div style="font-size:12px;color:#3f3f46;margin-top:2px;">${esc(e.mechanism || '')}</div>
       </div>`
       )
       .join('')}
-    ${data.edges.length > 10 ? `<p style="font-size:11px;color:#a1a1aa;">…and ${data.edges.length - 10} more edges.</p>` : ''}
+    ${data.edges.length > 8 ? `<p style="font-size:11px;color:#a1a1aa;">…and ${data.edges.length - 8} more connections in the full model.</p>` : ''}` : ''}
+
     ${data.recommended_mitigations.length > 0 ? `
     <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:8px;">
-      Recommended mitigations
+      Recommended next steps
     </div>
     ${data.recommended_mitigations
       .slice(0, 5)
       .map((m, i) => `
-      <div style="border-left:3px solid ${ateColor};padding:6px 10px;margin-bottom:6px;background:#fafafa;">
+      <div style="border-left:3px solid ${dirColor};padding:6px 10px;margin-bottom:6px;background:#fafafa;">
         <span style="font-size:12px;font-weight:bold;color:#18181b;">${i + 1}.</span>
         <span style="font-size:12px;color:#3f3f46;">${esc(m)}</span>
       </div>`)
       .join('')}` : ''}
+
     ${tests.length > 0 ? `
     <div style="font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#71717a;border-top:1px solid #e4e4e7;padding-top:14px;margin-bottom:8px;">
-      Refutation tests
+      How we checked the result
     </div>
     ${tests
       .map(
@@ -250,15 +366,23 @@ export function buildCausalReport(data: CausalAnalysisResponse): BuiltReport {
   `;
 
   return {
-    subject: `Cloud Sentiment forecast — ${data.scenario_title} (${sign(data.treatment_effect_ate)} pts)`,
-    html: shell('Causal Forecast Report', new Date().toLocaleString(), inner),
+    subject: `Mood forecast — ${data.scenario_title} (expected to move ${dir})`,
+    html: shell('Mood Forecast Report', new Date().toLocaleString(), inner),
     text:
-      `Cloud Sentiment — Causal Forecast report\n` +
+      `Cloud Sentiment — Mood forecast\n` +
       `Scenario: ${data.scenario_title}\n` +
-      `Treatment: ${data.intervention_name}\n` +
-      `Baseline: ${sign(data.baseline_sentiment_at_zero)} → Nadir: ${sign(data.predicted_nadir_sentiment)}\n` +
-      `Mood shift (ATE): ${sign(data.treatment_effect_ate)} pts over ${data.forecast_horizon_hours}h\n` +
-      `Peak impact: ${data.time_to_peak_impact_hours?.toFixed(1) ?? '—'}h · Robustness: ${data.causal_robustness_score?.toFixed(0) ?? '—'}%\n` +
-      (narr ? `\n${narr.slice(0, 600)}` : ''),
+      `What happened: ${data.intervention_name}\n\n` +
+      `IN SHORT: ${inShort}${confidenceLine}\n` +
+      (firstAction ? `\nWHAT TO DO NOW: ${firstAction}\n` : '') +
+      `\nMood before: ${sign(beforeVal)} · Mood at the ${extremeNoun}: ${sign(extremeVal)} · Overall change: ${sign(ate)}\n` +
+      (peakH !== undefined && peakH !== null ? `Hits its ${extremeNoun} after ~${peakH.toFixed(1)}h · ` : '') +
+      (halfH !== undefined && halfH !== null ? `Starts recovering after ~${halfH.toFixed(0)}h · ` : '') +
+      (rob !== undefined && rob !== null ? `Confidence: ${rob.toFixed(0)}%` : '') +
+      (narr ? `\n\nWHAT THIS MEANS:\n${narr.slice(0, 800)}` : ''),
   };
+}
+
+/** True when the picked strip samples skipped the T=0 (event) point. */
+function atZeroMissing(picked: Array<{ hour: number }>, series: Array<{ hour: number }>): boolean {
+  return !picked.some(p => p.hour === 0) && series.some(p => p.hour === 0);
 }
